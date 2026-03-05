@@ -101,9 +101,30 @@ NO_HAND_STOP_DELAY = 10
 
 FLASK_PORT = 5001
 
-GESTURE_TO_JOG = {
-    1: "J1+", 2: "J1-", 3: "J2+", 4: "J2-", 5: "J3+",
-    6: "J3-", 7: "J4+", 8: "J4-", 9: "J5+", 10: None,
+# Preset positions (joint angles in degrees)
+PRESETS = {
+    1: {
+        "name": "Preset 1",
+        "joints": [-198.39, -85.32, 32.59, 22.86, -0.01, 1.99]
+    },
+    2: {
+        "name": "Preset 2", 
+        "joints": [-252.05, -22.05, -99.95, 22.86, -0.01, 1.99]
+    }
+}
+
+# Gesture to preset mapping
+GESTURE_TO_PRESET = {
+    1: 1,    # Index -> Preset 1
+    2: 2,    # Index + Middle -> Preset 2
+    3: None, # Index + Middle + Ring -> (unused)
+    4: None, # Index + Middle + Ring + Pinky -> (unused)
+    5: None, # All Fingers -> STOP
+    6: None, # Thumb -> (unused)
+    7: None, # Thumb + Index -> (unused)
+    8: None, # Thumb + Index + Middle -> (unused)
+    9: None, # Thumb + Index + Middle + Ring -> (unused)
+    10: None,# Fist -> STOP
 }
 
 GESTURE_LABELS = {
@@ -141,7 +162,8 @@ class DobotController:
         self.mover = None
         self.connected = False
         self.enabled = False
-        self.current_jog = None
+        self.current_preset = None  # Current preset number
+        self.last_move_time = 0  # Timestamp of last movement
         self._lock = threading.Lock()
 
     def connect(self):
@@ -150,10 +172,6 @@ class DobotController:
             self.dashboard.settimeout(5)
             self.dashboard.connect((self.ip, self.dashboard_port))
             print(f"  [ROBOT] Dashboard → {self.ip}:{self.dashboard_port}")
-            self.mover = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.mover.settimeout(5)
-            self.mover.connect((self.ip, self.move_port))
-            print(f"  [ROBOT] Move port → {self.ip}:{self.move_port}")
             self.connected = True
             return True
         except Exception as e:
@@ -168,59 +186,146 @@ class DobotController:
                 self.dashboard.sendall((cmd + "\n").encode("utf-8"))
                 return self.dashboard.recv(1024).decode("utf-8").strip()
             except Exception as e:
-                print(f"  [ROBOT ERROR] Dashboard: {e}"); return None
-
-    def _send_move(self, cmd):
-        if not self.mover: return None
-        with self._lock:
-            try:
-                self.mover.sendall((cmd + "\n").encode("utf-8"))
-                return self.mover.recv(1024).decode("utf-8").strip()
-            except Exception as e:
-                print(f"  [ROBOT ERROR] Move: {e}"); return None
+                print(f"  [ROBOT ERROR] Dashboard: {e}")
+                return None
 
     def initialize(self):
         if not self.connected: return False
         print("  [ROBOT] Initializing...")
-        self._send_dashboard("RequestControl()"); time.sleep(0.5)
-        self._send_dashboard("ClearError()"); time.sleep(0.5)
+        self._send_dashboard("RequestControl()")
+        time.sleep(0.5)
+        self._send_dashboard("ClearError()")
+        time.sleep(0.5)
         resp = self._send_dashboard("EnableRobot()")
         print(f"  [ROBOT] EnableRobot → {resp}")
-        print("  [ROBOT] Waiting for servos..."); time.sleep(3)
+        print("  [ROBOT] Waiting for servos...")
+        time.sleep(3)
         self.enabled = True
-        print("  [ROBOT] ✓ Ready!"); return True
-
-    def jog(self, axis):
-        if not self.connected or not self.enabled: return
-        if axis == self.current_jog: return
-        if axis is None or axis == "":
-            self._send_move("MoveJog()")
-            if self.current_jog: print(f"  [ROBOT] ■ Stopped (was {self.current_jog})")
-            self.current_jog = None
+        print("  [ROBOT] ✓ Ready!")
+        return True
+    
+    def move_to_preset(self, preset_num):
+        """Move robot to preset position using JointMovJ"""
+        if not self.connected or not self.enabled:
+            return False
+        
+        if preset_num not in PRESETS:
+            print(f"  [ROBOT ERROR] Preset {preset_num} not found")
+            return False
+        
+        preset = PRESETS[preset_num]
+        joints = preset["joints"]
+        name = preset["name"]
+        
+        # Format: JointMovJ(j1,j2,j3,j4,j5,j6)
+        joint_str = ",".join([f"{j:.2f}" for j in joints])
+        cmd = f"JointMovJ({joint_str})"
+        
+        print(f"  [ROBOT] ► Moving to {name} (Preset {preset_num})")
+        resp = self._send_dashboard(cmd)
+        
+        if resp:
+            self.current_preset = preset_num
+            self.last_move_time = time.time()
+            print(f"  [ROBOT] Response: {resp}")
+            return True
         else:
-            self._send_move(f"MoveJog({axis})")
-            print(f"  [ROBOT] ► Jogging {axis}")
-            self.current_jog = axis
+            print(f"  [ROBOT ERROR] Failed to move to preset {preset_num}")
+            return False
+    
+    def stop(self):
+        if self.connected:
+            # No need to stop for preset movements
+            pass
+    
+    def disable(self):
+        if self.connected:
+            time.sleep(0.3)
+            self._send_dashboard("DisableRobot()")
+            self.enabled = False
+            print("  [ROBOT] Disabled")
+        
+        axis = movement_info["axis"]
+        delta = movement_info["delta"]
+        name = movement_info["name"]
+        
+        # Update pose first
+        if not self.update_pose():
+            print(f"  [ROBOT ERROR] Cannot get current pose for {name} movement")
+            return
+        
+        # Calculate new position
+        new_pose = self.current_pose.copy()
+        axis_map = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
+        
+        if axis in axis_map:
+            idx = axis_map[axis]
+            new_pose[idx] += delta
+            
+            # Add safety bounds check
+            if self._check_pose_safety(new_pose):
+                # Send MovL command with proper format
+                pose_str = ",".join([f"{p:.2f}" for p in new_pose])
+                cmd = f"MovL({pose_str})"
+                resp = self._send_move(cmd)
+                print(f"  [ROBOT] ► Moving {name} ({axis}{delta:+.1f}) → {resp}")
+                self.current_movement = name
+                self.current_pose = new_pose
+            else:
+                print(f"  [ROBOT WARNING] {name} movement blocked - would exceed safety limits")
+                self.current_movement = None
+    
+    def _check_pose_safety(self, pose):
+        """Basic safety check for pose limits"""
+        x, y, z, rx, ry, rz = pose
+        
+        # Basic workspace limits for Dobot Nova 5 (adjust as needed)
+        if not (-800 <= x <= 800):  # X limits
+            return False
+        if not (-800 <= y <= 800):  # Y limits  
+            return False
+        if not (-200 <= z <= 600):  # Z limits
+            return False
+        if not (-180 <= rx <= 180): # RX limits
+            return False
+        if not (-180 <= ry <= 180): # RY limits
+            return False
+        if not (-180 <= rz <= 180): # RZ limits
+            return False
+            
+        return True
 
     def stop(self):
         if self.connected:
-            self._send_move("MoveJog()"); self.current_jog = None
+            self._send_dashboard("MoveJog()")
+            self.current_jog = None
+            print("  [ROBOT] ■ Stopped")
 
     def disable(self):
         if self.connected:
-            self._send_move("MoveJog()"); self.current_jog = None
-            time.sleep(0.3); self._send_dashboard("DisableRobot()")
-            self.enabled = False; print("  [ROBOT] Disabled")
+            self._send_dashboard("MoveJog()")  # Stop jogging first
+            self.current_jog = None
+            time.sleep(0.3)
+            self._send_dashboard("DisableRobot()")
+            self.enabled = False
+            print("  [ROBOT] Disabled")
 
     def disconnect(self):
-        if self.enabled: self.disable()
-        if self.dashboard: self.dashboard.close()
-        if self.mover: self.mover.close()
-        self.connected = False; print("  [ROBOT] Disconnected")
+        if self.enabled:
+            self.disable()
+        if self.dashboard:
+            self.dashboard.close()
+        self.connected = False
+        print("  [ROBOT] Disconnected")
 
     def get_status(self):
-        return {"connected": self.connected, "enabled": self.enabled,
-                "ip": self.ip, "current_jog": self.current_jog}
+        return {
+            "connected": self.connected,
+            "enabled": self.enabled,
+            "ip": self.ip,
+            "current_preset": self.current_preset,
+            "presets": {k: v["name"] for k, v in PRESETS.items()}
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -242,7 +347,7 @@ dry_run = False
 latest_detection = {
     "hand_detected": False, "gesture_id": None, "gesture_name": "None",
     "confidence": 0.0, "class_id": None, "bbox": None,
-    "method": "none", "robot_jog": None,
+    "method": "none", "robot_preset": None,
 }
 detection_lock = threading.Lock()
 
@@ -445,23 +550,37 @@ def detect_mediapipe(frame):
 
 def process_robot(gesture_id):
     global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter
-    if robot is None or not robot.connected or not robot.enabled: return None
-    if _cooldown_counter > 0:
-        _cooldown_counter -= 1; return robot.current_jog
-    if gesture_id is None:
-        _debounce_counter = 0; _debounce_last_gesture = None; _no_hand_counter += 1
-        if _no_hand_counter >= NO_HAND_STOP_DELAY:
-            robot.jog(None); _no_hand_counter = NO_HAND_STOP_DELAY
+    if robot is None or not robot.connected or not robot.enabled:
         return None
+    
+    if _cooldown_counter > 0:
+        _cooldown_counter -= 1
+        return robot.current_preset
+    
+    if gesture_id is None:
+        _debounce_counter = 0
+        _debounce_last_gesture = None
+        _no_hand_counter += 1
+        return None
+    
     _no_hand_counter = 0
-    if gesture_id == _debounce_last_gesture: _debounce_counter += 1
-    else: _debounce_counter = 1; _debounce_last_gesture = gesture_id
+    
+    if gesture_id == _debounce_last_gesture:
+        _debounce_counter += 1
+    else:
+        _debounce_counter = 1
+        _debounce_last_gesture = gesture_id
+    
     if _debounce_counter >= DEBOUNCE_FRAMES:
-        jog = GESTURE_TO_JOG.get(gesture_id)
-        robot.jog(jog if jog else None)
-        _debounce_counter = 0; _cooldown_counter = COOLDOWN_FRAMES
-        return jog
-    return robot.current_jog
+        preset_num = GESTURE_TO_PRESET.get(gesture_id)
+        if preset_num:
+            robot.move_to_preset(preset_num)
+            _debounce_counter = 0
+            _cooldown_counter = COOLDOWN_FRAMES
+            return preset_num
+        _debounce_counter = 0
+    
+    return robot.current_preset
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -487,8 +606,8 @@ def analyze_frame(frame):
         det = {"hand_detected":False,"gesture_id":None,"gesture_name":"None",
                "confidence":0.0,"class_id":None,"bbox":None,"method":"none"}
 
-    active_jog = process_robot(det.get("gesture_id"))
-    det["robot_jog"] = active_jog
+    active_preset = process_robot(det.get("gesture_id"))
+    det["robot_preset"] = active_preset
 
     clean = {k:v for k,v in det.items() if k not in ("landmarks","handedness")}
     with detection_lock: latest_detection = clean
@@ -530,7 +649,7 @@ def draw_overlay(frame):
 
     if det.get("hand_detected"):
         gid=det["gesture_id"]; gname=det["gesture_name"]; conf=det["confidence"]
-        bbox=det["bbox"]; jog=det.get("robot_jog"); color=GESTURE_COLORS.get(gid,(255,255,255))
+        bbox=det["bbox"]; preset=det.get("robot_preset"); color=GESTURE_COLORS.get(gid,(255,255,255))
         if bbox:
             x1,y1,x2,y2=[int(v) for v in bbox]
             cv2.rectangle(out,(x1,y1),(x2,y2),color,3)
@@ -541,13 +660,13 @@ def draw_overlay(frame):
         cv2.putText(out,str(gid),(20,70),cv2.FONT_HERSHEY_SIMPLEX,2.5,color,5)
         cv2.putText(out,gname,(90,50),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
         cv2.putText(out,f"{conf:.0%}",(90,80),cv2.FONT_HERSHEY_SIMPLEX,0.5,(150,255,150),1)
-        jt=f"JOG: {jog}" if jog else "JOG: STOPPED"
-        jc=(0,255,0) if jog else (80,80,255)
-        cv2.putText(out,jt,(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,jc,2)
+        pt=f"PRESET: {preset}" if preset else "READY"
+        pc=(0,255,0) if preset else (80,80,255)
+        cv2.putText(out,pt,(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,pc,2)
         cv2.putText(out,f"[{det.get('method','')}]",(10,FRAME_HEIGHT-15),cv2.FONT_HERSHEY_SIMPLEX,0.45,(180,180,180),1)
     else:
         cv2.putText(out,"No hand detected",(20,60),cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,100,255),2)
-        cv2.putText(out,"JOG: STOPPED",(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,(80,80,255),2)
+        cv2.putText(out,"READY",(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,(80,80,255),2)
 
     # Tracking active indicator
     cv2.circle(out,(20,FRAME_HEIGHT-20),8,(0,255,0),-1)
@@ -667,7 +786,7 @@ def dashboard():
       <h3>Robot Status</h3>
       <div class="status-row"><span class="label">Connection</span><span class="value" id="robotConn">—</span></div>
       <div class="status-row"><span class="label">Enabled</span><span class="value" id="robotEnabled">—</span></div>
-      <div class="status-row"><span class="label">Current Jog</span><span class="value" id="robotJog">—</span></div>
+      <div class="status-row"><span class="label">Current Preset</span><span class="value" id="robotJog">—</span></div>
       <div class="status-row"><span class="label">IP</span><span class="value" id="robotIp">—</span></div>
       <div style="height:8px"></div>
       <div class="btn-group">
@@ -676,7 +795,7 @@ def dashboard():
       </div>
     </div>
     <div class="card">
-      <h3>Gesture → Jog Map</h3>
+      <h3>Gesture → Preset Map</h3>
       <div class="gesture-grid" id="gestureMap"></div>
     </div>
   </div>
@@ -695,19 +814,20 @@ function disableRobot(){fetch('/robot/disable',{method:'POST'})}
 function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   const n=document.getElementById('gestureNum'),m=document.getElementById('gestureName'),j=document.getElementById('gestureJog');
   if(d.hand_detected){n.textContent=d.gesture_id;n.style.color='#58a6ff';m.textContent=d.gesture_name;
-    j.textContent=d.robot_jog?'JOG: '+d.robot_jog:'STOPPED';j.style.color=d.robot_jog?'#3fb950':'#f85149'}
+    j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}
   else{n.textContent='—';n.style.color='#484f58';m.textContent=d.gesture_name||'No hand';j.textContent='—';j.style.color='#484f58'}
   if(d.method==='paused'&&isTracking)updateUI(false);
   if(d.method!=='paused'&&!isTracking)updateUI(true);
   if(d.robot){const r=d.robot;
     document.getElementById('robotConn').innerHTML=r.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Disconnected';
     document.getElementById('robotEnabled').innerHTML=r.enabled?'<span class="dot green"></span>Yes':'<span class="dot yellow"></span>No';
-    document.getElementById('robotJog').textContent=r.current_jog||'None';
+    document.getElementById('robotJog').textContent=r.current_preset?'Preset '+r.current_preset:'None';
     document.getElementById('robotIp').textContent=r.ip||'—'}}).catch(()=>{})}
 function loadMap(){fetch('/config/gesture_map').then(r=>r.json()).then(m=>{
   const names={1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
+  const presets={1:'Preset 1',2:'Preset 2',3:'-',4:'-',5:'-',6:'-',7:'-',8:'-',9:'-',10:'-'};
   const g=document.getElementById('gestureMap');g.innerHTML='';
-  for(let i=1;i<=10;i++)g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog">'+(m[i]||'STOP')+'</div>'})}
+  for(let i=1;i<=10;i++)g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog">'+(presets[i]||'-')+'</div>'})}
 // Also listen for keyboard in the browser
 document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();toggleTracking()}if(e.key==='s'||e.key==='S'){emergencyStop()}});
 setInterval(poll,150);loadMap();
@@ -737,7 +857,8 @@ def api_status():
     return jsonify({"running":is_running,"tracking":tracking_active,"detection_method":DETECTION_METHOD,
                     "yolo_loaded":yolo_model is not None,"mediapipe_loaded":hands_detector is not None,
                     "robot":rs,"gestures":GESTURE_ID_TO_NAME,
-                    "gesture_to_jog":{str(k):v for k,v in GESTURE_TO_JOG.items()}})
+                    "gesture_to_preset":{str(k):v for k,v in GESTURE_TO_PRESET.items()},
+                    "presets":{str(k):v["name"] for k,v in PRESETS.items()}})
 
 @flask_app.route("/detection", methods=["GET"])
 def api_detection():
@@ -783,19 +904,22 @@ def api_disable():
     if robot and robot.connected: robot.disable(); return jsonify({"status":"disabled"})
     return jsonify({"error":"not connected"}),503
 
-@flask_app.route("/robot/jog", methods=["POST"])
-def api_jog():
+@flask_app.route("/robot/preset", methods=["POST"])
+def api_preset():
     if not robot or not robot.connected: return jsonify({"error":"not connected"}),503
-    data = request.get_json(silent=True) or {}; axis=data.get("axis","")
-    robot.jog(axis if axis else None); return jsonify({"status":"ok","axis":axis})
-
-@flask_app.route("/config/gesture_map", methods=["GET","POST"])
-def api_map():
-    global GESTURE_TO_JOG
-    if request.method=="GET": return jsonify({str(k):v for k,v in GESTURE_TO_JOG.items()})
     data = request.get_json(silent=True) or {}
-    for k,v in data.items(): GESTURE_TO_JOG[int(k)] = v if v else None
-    return jsonify({"status":"updated","map":{str(k):v for k,v in GESTURE_TO_JOG.items()}})
+    preset_num = data.get("preset")
+    if preset_num:
+        success = robot.move_to_preset(int(preset_num))
+        return jsonify({"status":"ok" if success else "failed","preset":preset_num})
+    return jsonify({"error":"invalid preset"}),400
+
+@flask_app.route("/config/gesture_map", methods=["GET"])
+def api_map():
+    return jsonify({
+        "gesture_to_preset": {str(k):v for k,v in GESTURE_TO_PRESET.items()},
+        "presets": {str(k):v["name"] for k,v in PRESETS.items()}
+    })
 
 @flask_app.route("/shutdown", methods=["POST"])
 def api_shutdown():
@@ -839,6 +963,12 @@ def main():
         print("\n  [DRY RUN] --no-robot: commands printed, not sent")
         robot = DobotController(DOBOT_IP, DASHBOARD_PORT, MOVE_PORT)
         robot.connected=True; robot.enabled=True
+        def fake_jog(axis):
+            if axis != robot.current_jog:
+                if axis: print(f"  [DRY RUN] MoveJog({axis})")
+                else: print(f"  [DRY RUN] MoveJog() → STOP")
+                robot.current_jog = axis
+        robot.jog = fake_jog
         def fake_jog(axis):
             if axis != robot.current_jog:
                 if axis: print(f"  [DRY RUN] MoveJog({axis})")

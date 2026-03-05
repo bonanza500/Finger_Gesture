@@ -632,13 +632,30 @@ def capture_loop():
         time.sleep(0.025)  # ~40 FPS
 
 
+def gesture_to_finger_states(gesture_id):
+    """Convert gesture ID back to finger states for Lua plugin compatibility."""
+    finger_map = {
+        1:  {"thumb": False, "index": True,  "middle": False, "ring": False, "pinky": False},  # Index
+        2:  {"thumb": False, "index": True,  "middle": True,  "ring": False, "pinky": False},  # Index + Middle
+        3:  {"thumb": False, "index": True,  "middle": True,  "ring": True,  "pinky": False},  # Index + Middle + Ring
+        4:  {"thumb": False, "index": True,  "middle": True,  "ring": True,  "pinky": True},   # Index + Middle + Ring + Pinky
+        5:  {"thumb": True,  "index": True,  "middle": True,  "ring": True,  "pinky": True},   # All Fingers
+        6:  {"thumb": True,  "index": False, "middle": False, "ring": False, "pinky": False}, # Thumb
+        7:  {"thumb": True,  "index": True,  "middle": False, "ring": False, "pinky": False}, # Thumb + Index
+        8:  {"thumb": True,  "index": True,  "middle": True,  "ring": False, "pinky": False}, # Thumb + Index + Middle
+        9:  {"thumb": True,  "index": True,  "middle": True,  "ring": True,  "pinky": False}, # Thumb + Index + Middle + Ring
+        10: {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}, # Fist
+    }
+    return finger_map.get(gesture_id, {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False})
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  API ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
 @app.route("/status", methods=["GET"])
 def status():
-    """Server health check."""
+    """Server health check - Compatible with Lua plugin."""
     return jsonify({
         "running": is_running,
         "width": FRAME_WIDTH,
@@ -646,6 +663,7 @@ def status():
         "detection_method": DETECTION_METHOD,
         "yolo_loaded": yolo_model is not None,
         "mediapipe_loaded": hands_detector is not None,
+        "model_loaded": yolo_model is not None or hands_detector is not None,
         "sklearn_loaded": sklearn_model is not None,
         "model_path": MODEL_PATH,
         "gestures": GESTURE_ID_TO_NAME,
@@ -654,9 +672,21 @@ def status():
 
 @app.route("/detection", methods=["GET"])
 def get_detection():
-    """Get latest gesture detection data (JSON)."""
+    """Get latest gesture detection data (JSON) - Compatible with Lua plugin."""
     with detection_lock:
         data = latest_detection.copy()
+    
+    # Add finger_states for Lua plugin compatibility
+    if data.get("hand_detected"):
+        # Convert gesture back to finger states for Lua plugin
+        gesture_id = data.get("gesture_id")
+        finger_states = gesture_to_finger_states(gesture_id)
+        data["finger_states"] = finger_states
+        data["raised_fingers"] = [name for name, raised in finger_states.items() if raised]
+    else:
+        data["finger_states"] = {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}
+        data["raised_fingers"] = []
+    
     return jsonify(data)
 
 

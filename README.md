@@ -14,15 +14,15 @@ Advanced 10-gesture finger control for Dobot Nova 5 using MediaPipe hand trackin
 
 | Gesture ID | Fingers | Robot Action |
 |------------|---------|--------------|
-| 1 | Index | Move UP (+Z, 50mm) |
-| 2 | Index + Middle | Move FORWARD (+Y, 50mm) |
-| 3 | Index + Middle + Ring | Move RIGHT (+X, 50mm) |
-| 4 | Index + Middle + Ring + Pinky | Move DOWN (-Z, 50mm) |
+| 1 | Index | Move UP (+Z, 10mm) |
+| 2 | Index + Middle | Move FORWARD (+Y, 10mm) |
+| 3 | Index + Middle + Ring | Move RIGHT (+X, 10mm) |
+| 4 | Index + Middle + Ring + Pinky | Move DOWN (-Z, 10mm) |
 | 5 | All Fingers (open hand) | STOP |
-| 6 | Thumb | Move LEFT (-X, 50mm) |
-| 7 | Thumb + Index | Move BACKWARD (-Y, 50mm) |
-| 8 | Thumb + Index + Middle | Rotate CW (+15°) |
-| 9 | Thumb + Index + Middle + Ring | Rotate CCW (-15°) |
+| 6 | Thumb | Move LEFT (-X, 10mm) |
+| 7 | Thumb + Index | Move BACKWARD (-Y, 10mm) |
+| 8 | Thumb + Index + Middle | Rotate CW (+5°) |
+| 9 | Thumb + Index + Middle + Ring | Rotate CCW (-5°) |
 | 10 | Fist (no fingers) | STOP |
 
 ## Installation
@@ -120,27 +120,17 @@ TestFingerGesture()
 
 ### Movement Parameters
 
-Edit `api.lua` to customize:
+Edit `dobot_gesture_control.py` to customize:
 
-```lua
-local MOVE_STEP = 50  -- mm per gesture (default 50)
-local MOVE_SPEED = 100  -- movement speed % (default 100)
+```python
+MOVE_STEP = 10  # mm per gesture (default 10mm)
 ```
 
-### Rotation Amount
+For rotation gestures (8 & 9), edit the delta value in `GESTURE_TO_MOVEMENT`:
 
-In `api.lua`, gestures 8 & 9:
-
-```lua
-rz = rz + 15  -- Change rotation amount (degrees)
-```
-
-### Gripper Pin
-
-In `api.lua`, `GripperByFingerCount()` function:
-
-```lua
-SetDO(1, 0)  -- Change pin number (first parameter)
+```python
+8: {"axis": "RZ", "delta": 5, "name": "ROTATE_CW"},  # Change 5 to desired degrees
+9: {"axis": "RZ", "delta": -5, "name": "ROTATE_CCW"},
 ```
 
 ## Troubleshooting

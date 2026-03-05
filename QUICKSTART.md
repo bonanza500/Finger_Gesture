@@ -115,8 +115,8 @@ StartGestureControl(5)  -- Only 5 seconds for first test
 ## What's Next?
 
 1. Practice all 10 gestures
-2. Adjust movement step size in `api.lua`
-3. Customize gesture mapping
+2. Adjust movement step size in `dobot_gesture_control.py` (MOVE_STEP variable)
+3. Customize gesture mapping in GESTURE_TO_MOVEMENT
 4. Add safety boundaries
 5. Try continuous control mode
 
@@ -127,5 +127,6 @@ StartGestureControl(5)  -- Only 5 seconds for first test
 - **Includes**: Rotation control (gestures 8 & 9)
 - **Detection**: Geometric finger detection (more precise)
 - **No model file needed**: Uses MediaPipe landmarks only
+- **Movement**: Coordinate-based (X, Y, Z) instead of joint angles
 
 Both plugins can run simultaneously on different ports!
