@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════════════════
-  Finger Gesture Detection + Dobot Nova 5 Controller (All-in-One)
+  Finger Gesture Detection + Dobot Nova 5 Controller + Canon EOS 6D
   Auto-starts detection │ Web dashboard │ Physical keyboard controls
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -9,15 +9,31 @@ Keyboard Controls:
   [S]      Emergency stop robot
   [ESC]    Exit program safely
 
+Gestures:
+  Index finger (1)         → Move robot to Preset 1
+  Index + Middle (2)       → Move robot to Preset 2
+  Thumb + Index (7)        → Snap photo with Canon EOS 6D
+  Fist (10) / All (5)      → Stop
+
 Usage:
-  python finger_gesture_dobot.py                    # Normal mode
-  python finger_gesture_dobot.py --no-robot         # Vision only
-  python finger_gesture_dobot.py --ip 192.168.5.1   # LAN1
+  python dobot_gesture_control_camera.py                    # Full mode
+  python dobot_gesture_control_camera.py --no-robot         # Vision + camera only
+  python dobot_gesture_control_camera.py --no-camera        # Robot only, no camera
+  python dobot_gesture_control_camera.py --ip 192.168.5.1   # Custom robot IP
+  python dobot_gesture_control_camera.py --photo-dir D:\\Photos  # Custom save dir
 
 Open http://localhost:5001 in browser for web dashboard.
 
 Requirements:
   pip install flask flask-cors ultralytics mediapipe opencv-python numpy joblib keyboard
+  
+Camera Setup (Canon EOS 6D via digiCamControl):
+  1. Install digiCamControl: https://digicamcontrol.com/download
+  2. CLOSE Canon EOS Utility (it locks the USB connection!)
+  3. Open digiCamControl → verify camera appears
+  4. Enable webserver: File → Settings → Webserver → Enable → RESTART app
+  5. Leave digiCamControl running in background while this script runs
+  6. Set camera to Manual (M), disable auto-sleep
 """
 
 import cv2
@@ -95,6 +111,14 @@ DOBOT_IP = "192.168.1.6"
 DASHBOARD_PORT = 29999
 MOVE_PORT = 30003
 
+# ── Canon EOS 6D Configuration (via digiCamControl) ─────────────
+CANON_ENABLED = True                      # Set False to disable camera features
+CANON_SAVE_DIR = r"C:\CapturedPhotos"     # Where digiCamControl saves photos
+CANON_CAPTURE_GESTURE = 7                 # Gesture 7 = "Thumb + Index" → snap photo
+CANON_CAPTURE_COOLDOWN = 30               # Frames to wait between captures (~1 sec)
+DIGICAM_URL = "http://localhost:5513"     # digiCamControl webserver address
+DIGICAM_CAPTURE_TIMEOUT = 15             # Max seconds to wait for a capture
+
 DEBOUNCE_FRAMES = 8
 COOLDOWN_FRAMES = 15
 NO_HAND_STOP_DELAY = 10
@@ -114,17 +138,18 @@ PRESETS = {
 }
 
 # Gesture to preset mapping
+# Use "camera" as the action for the photo capture gesture
 GESTURE_TO_PRESET = {
-    1: 1,    # Index -> Preset 1
-    2: 2,    # Index + Middle -> Preset 2
-    3: None, # Index + Middle + Ring -> (unused)
-    4: None, # Index + Middle + Ring + Pinky -> (unused)
-    5: None, # All Fingers -> STOP
-    6: None, # Thumb -> (unused)
-    7: None, # Thumb + Index -> (unused)
-    8: None, # Thumb + Index + Middle -> (unused)
-    9: None, # Thumb + Index + Middle + Ring -> (unused)
-    10: None,# Fist -> STOP
+    1: 1,        # Index -> Preset 1
+    2: 2,        # Index + Middle -> Preset 2
+    3: None,     # Index + Middle + Ring -> (unused)
+    4: None,     # Index + Middle + Ring + Pinky -> (unused)
+    5: None,     # All Fingers -> STOP
+    6: None,     # Thumb -> (unused)
+    7: "camera", # Thumb + Index -> SNAP PHOTO
+    8: None,     # Thumb + Index + Middle -> (unused)
+    9: None,     # Thumb + Index + Middle + Ring -> (unused)
+    10: None,    # Fist -> STOP
 }
 
 GESTURE_LABELS = {
@@ -329,6 +354,163 @@ class DobotController:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  CANON EOS 6D CAMERA CONTROLLER (via digiCamControl)
+# ═══════════════════════════════════════════════════════════════════
+
+class CanonCamera:
+    """
+    Controls a Canon EOS 6D via digiCamControl's built-in HTTP webserver.
+    
+    digiCamControl is a free, open-source Windows app that handles the
+    Canon EDSDK driver layer for you. Your Python code just makes simple
+    HTTP requests to localhost:5513.
+    
+    ── SETUP (one-time) ──────────────────────────────────────────────
+    
+    1. Download & install digiCamControl:
+       https://sourceforge.net/projects/digicamcontrol/files/latest/download
+    
+    2. CLOSE Canon EOS Utility (it locks the USB — only one app at a time!)
+    
+    3. Open digiCamControl, verify your Canon EOS 6D appears in the app.
+    
+    4. Enable the webserver:
+       File → Settings → Webserver →
+         ✓ Enable "Use web server"
+         ✓ Enable "Allow interaction via webserver"
+         Port: 5513
+       → RESTART digiCamControl after changing this!
+    
+    5. Set your session folder:
+       Session → Edit Current Session → Folder → (pick your save directory)
+    
+    6. Set camera to Manual (M) mode. Disable auto-sleep / auto-power-off.
+    
+    7. Leave digiCamControl running in the background while your script runs.
+    
+    ── HOW IT WORKS ──────────────────────────────────────────────────
+    
+    Capture:    GET http://localhost:5513/?CMD=Capture
+    Last file:  GET http://localhost:5513/?slc=get&param1=lastcaptured&param2=
+    Preview:    GET http://localhost:5513/preview.jpg
+    Session:    GET http://localhost:5513/session.json
+    Set folder: GET http://localhost:5513/?slc=set&param1=session.folder&param2=C:\\Photos
+    """
+    
+    def __init__(self, save_dir=CANON_SAVE_DIR, digicam_url=DIGICAM_URL):
+        self.save_dir = save_dir
+        self.base_url = digicam_url.rstrip("/")
+        self.connected = False
+        self.last_capture_path = None
+        self.last_capture_time = 0
+        self.capture_count = 0
+        self._lock = threading.Lock()
+        self._flash_until = 0  # Timestamp until which "CAPTURED" overlay shows
+    
+    def _http_get(self, path, timeout=5):
+        """Make a simple GET request to digiCamControl's webserver."""
+        import urllib.request
+        import urllib.error
+        url = f"{self.base_url}{path}"
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace").strip()
+        except urllib.error.URLError as e:
+            print(f"  [CANON ERROR] Cannot reach digiCamControl: {e.reason}")
+            return None
+        except Exception as e:
+            print(f"  [CANON ERROR] HTTP request failed: {e}")
+            return None
+    
+    def detect(self):
+        """
+        Check if digiCamControl is running and a camera is connected.
+        Tests by fetching session.json from the webserver.
+        """
+        try:
+            result = self._http_get("/session.json", timeout=3)
+            if result is not None:
+                print(f"  [CANON] digiCamControl webserver is responding")
+                self.connected = True
+                
+                # Try to set the save folder
+                escaped_dir = self.save_dir.replace("\\", "\\\\")
+                self._http_get(f"/?slc=set&param1=session.folder&param2={self.save_dir}")
+                
+                return True
+            else:
+                print("  [CANON] digiCamControl webserver not responding")
+                print("  [CANON]   1. Is digiCamControl running?")
+                print("  [CANON]   2. Is the webserver enabled? (File → Settings → Webserver)")
+                print("  [CANON]   3. Did you restart digiCamControl after enabling it?")
+                self.connected = False
+                return False
+        except Exception as e:
+            print(f"  [CANON ERROR] Detection failed: {e}")
+            self.connected = False
+            return False
+    
+    def capture(self):
+        """
+        Trigger a capture on the Canon EOS 6D via digiCamControl.
+        Returns the file path of the captured image, or None on failure.
+        """
+        if not self.connected:
+            print("  [CANON ERROR] Camera not connected")
+            return None
+        
+        with self._lock:
+            print("  [CANON] Triggering capture...")
+            
+            # Send capture command
+            result = self._http_get("/?CMD=Capture", timeout=DIGICAM_CAPTURE_TIMEOUT)
+            
+            if result is None:
+                print("  [CANON ERROR] Capture command failed — no response")
+                return None
+            
+            # Wait briefly for the photo to be saved and transferred
+            time.sleep(1.5)
+            
+            # Poll for the last captured filename
+            for attempt in range(10):
+                last_file = self._http_get(
+                    "/?slc=get&param1=lastcaptured&param2=", timeout=5
+                )
+                if last_file and last_file != "-" and last_file.strip():
+                    filepath = last_file.strip()
+                    self.capture_count += 1
+                    self.last_capture_path = filepath
+                    self.last_capture_time = time.time()
+                    self._flash_until = time.time() + 2.0  # Flash for 2 seconds
+                    print(f"  [CANON] ✓ Photo #{self.capture_count}: {filepath}")
+                    return filepath
+                time.sleep(0.5)
+            
+            # If polling didn't return a filename, capture may still have worked
+            self.capture_count += 1
+            self.last_capture_time = time.time()
+            self._flash_until = time.time() + 2.0
+            print(f"  [CANON] ✓ Capture triggered (file path not confirmed)")
+            return "captured"
+    
+    def is_flashing(self):
+        """Returns True if the capture flash indicator should show."""
+        return time.time() < self._flash_until
+    
+    def get_status(self):
+        return {
+            "connected": self.connected,
+            "capture_count": self.capture_count,
+            "last_capture": self.last_capture_path,
+            "last_capture_time": self.last_capture_time,
+            "save_dir": self.save_dir,
+            "digicam_url": self.base_url,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  GLOBAL STATE
 # ═══════════════════════════════════════════════════════════════════
 
@@ -342,6 +524,7 @@ yolo_model = None
 hands_detector = None
 sklearn_model = None
 robot = None
+canon = None  # Canon EOS 6D camera controller
 dry_run = False
 
 latest_detection = {
@@ -572,12 +755,29 @@ def process_robot(gesture_id):
         _debounce_last_gesture = gesture_id
     
     if _debounce_counter >= DEBOUNCE_FRAMES:
-        preset_num = GESTURE_TO_PRESET.get(gesture_id)
-        if preset_num:
-            robot.move_to_preset(preset_num)
+        action = GESTURE_TO_PRESET.get(gesture_id)
+        
+        # ── Camera capture gesture ──────────────────────────────
+        if action == "camera":
+            if canon and canon.connected:
+                # Run capture in a separate thread so it doesn't block detection
+                threading.Thread(target=canon.capture, daemon=True).start()
+                print(f"  [GESTURE] Thumb + Index → SNAP PHOTO")
+                _debounce_counter = 0
+                _cooldown_counter = CANON_CAPTURE_COOLDOWN
+                return "camera"
+            else:
+                print(f"  [GESTURE] Camera gesture detected but camera not connected")
+                _debounce_counter = 0
+                return robot.current_preset
+        
+        # ── Robot movement gesture ──────────────────────────────
+        elif action and isinstance(action, int):
+            robot.move_to_preset(action)
             _debounce_counter = 0
             _cooldown_counter = COOLDOWN_FRAMES
-            return preset_num
+            return action
+        
         _debounce_counter = 0
     
     return robot.current_preset
@@ -662,6 +862,20 @@ def draw_overlay(frame):
         cv2.putText(out,f"{conf:.0%}",(90,80),cv2.FONT_HERSHEY_SIMPLEX,0.5,(150,255,150),1)
         pt=f"PRESET: {preset}" if preset else "READY"
         pc=(0,255,0) if preset else (80,80,255)
+        
+        # Camera capture flash indicator
+        if preset == "camera" or (canon and canon.is_flashing()):
+            pt = f"PHOTO #{canon.capture_count}" if canon else "SNAP!"
+            pc = (0,255,255)  # Cyan for camera
+            # White flash effect
+            overlay = out.copy()
+            cv2.rectangle(overlay, (0,0), (FRAME_WIDTH, FRAME_HEIGHT), (255,255,255), -1)
+            alpha = max(0.0, (canon._flash_until - time.time()) / 2.0 * 0.3) if canon else 0.15
+            out = cv2.addWeighted(overlay, alpha, out, 1-alpha, 0)
+            # Camera icon text
+            cv2.putText(out, "PHOTO CAPTURED", (FRAME_WIDTH//2-130, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+        
         cv2.putText(out,pt,(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,pc,2)
         cv2.putText(out,f"[{det.get('method','')}]",(10,FRAME_HEIGHT-15),cv2.FONT_HERSHEY_SIMPLEX,0.45,(180,180,180),1)
     else:
@@ -678,6 +892,16 @@ def draw_overlay(frame):
     elif dry_run: st,sc="ROBOT: DRY RUN",(0,255,255)
     else: st,sc="ROBOT: OFFLINE",(80,80,255)
     cv2.putText(out,st,(FRAME_WIDTH-230,FRAME_HEIGHT-15),cv2.FONT_HERSHEY_SIMPLEX,0.55,sc,2)
+    
+    # Canon camera status
+    if CANON_ENABLED:
+        if canon and canon.connected:
+            cs = f"CANON: {canon.capture_count} shots"
+            cc = (0, 255, 255)
+        else:
+            cs, cc = "CANON: OFFLINE", (80, 80, 255)
+        cv2.putText(out, cs, (FRAME_WIDTH-230, FRAME_HEIGHT-40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, cc, 1)
+    
     return out
 
 
@@ -798,6 +1022,16 @@ def dashboard():
       <h3>Gesture → Preset Map</h3>
       <div class="gesture-grid" id="gestureMap"></div>
     </div>
+    <div class="card" id="cameraCard">
+      <h3>Canon EOS 6D</h3>
+      <div class="status-row"><span class="label">Connection</span><span class="value" id="canonConn">—</span></div>
+      <div class="status-row"><span class="label">Photos Taken</span><span class="value" id="canonCount">0</span></div>
+      <div class="status-row"><span class="label">Last Photo</span><span class="value" id="canonLast" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">—</span></div>
+      <div style="height:8px"></div>
+      <button class="btn btn-outline" onclick="manualCapture()" style="border-color:#d29922;color:#d29922">Manual Capture</button>
+      <div style="height:8px"></div>
+      <img id="lastPhoto" style="width:100%;border-radius:8px;display:none;border:1px solid #30363d" />
+    </div>
   </div>
 </div>
 <script>
@@ -811,10 +1045,23 @@ function updateUI(a){isTracking=a;const b=document.getElementById('btnTracking')
 function emergencyStop(){fetch('/robot/stop',{method:'POST'});fetch('/tracking/stop',{method:'POST'}).then(()=>updateUI(false))}
 function enableRobot(){fetch('/robot/enable',{method:'POST'})}
 function disableRobot(){fetch('/robot/disable',{method:'POST'})}
+function manualCapture(){
+  fetch('/camera/capture',{method:'POST'}).then(r=>r.json()).then(d=>{
+    if(d.status==='captured'){document.getElementById('canonCount').textContent=d.count;refreshLastPhoto()}
+    else{alert('Capture failed: '+(d.error||'unknown'))}
+  }).catch(()=>alert('Camera not available'))
+}
+function refreshLastPhoto(){
+  fetch('/camera/last').then(r=>r.json()).then(d=>{
+    if(d.frame){const img=document.getElementById('lastPhoto');img.src='data:image/jpeg;base64,'+d.frame;img.style.display='block';
+    document.getElementById('canonLast').textContent=d.path.split(/[\\/]/).pop()}
+  }).catch(()=>{})
+}
 function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   const n=document.getElementById('gestureNum'),m=document.getElementById('gestureName'),j=document.getElementById('gestureJog');
   if(d.hand_detected){n.textContent=d.gesture_id;n.style.color='#58a6ff';m.textContent=d.gesture_name;
-    j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}
+    if(d.robot_preset==='camera'){j.textContent='SNAP!';j.style.color='#d29922'}
+    else{j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}}
   else{n.textContent='—';n.style.color='#484f58';m.textContent=d.gesture_name||'No hand';j.textContent='—';j.style.color='#484f58'}
   if(d.method==='paused'&&isTracking)updateUI(false);
   if(d.method!=='paused'&&!isTracking)updateUI(true);
@@ -825,12 +1072,18 @@ function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
     document.getElementById('robotIp').textContent=r.ip||'—'}}).catch(()=>{})}
 function loadMap(){fetch('/config/gesture_map').then(r=>r.json()).then(m=>{
   const names={1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
-  const presets={1:'Preset 1',2:'Preset 2',3:'-',4:'-',5:'-',6:'-',7:'-',8:'-',9:'-',10:'-'};
+  const presets={1:'Preset 1',2:'Preset 2',3:'-',4:'-',5:'-',6:'-',7:'CAMERA',8:'-',9:'-',10:'-'};
   const g=document.getElementById('gestureMap');g.innerHTML='';
-  for(let i=1;i<=10;i++)g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog">'+(presets[i]||'-')+'</div>'})}
+  for(let i=1;i<=10;i++){const act=presets[i]||'-';const style=act==='CAMERA'?'color:#d29922;font-weight:700':'';
+    g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog" style="'+style+'">'+act+'</div>'}})}
+function pollCamera(){fetch('/camera/status').then(r=>r.json()).then(d=>{
+  document.getElementById('canonConn').innerHTML=d.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Offline';
+  document.getElementById('canonCount').textContent=d.capture_count||0;
+  if(d.last_capture){document.getElementById('canonLast').textContent=d.last_capture.split(/[\\/]/).pop()}
+}).catch(()=>{})}
 // Also listen for keyboard in the browser
 document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();toggleTracking()}if(e.key==='s'||e.key==='S'){emergencyStop()}});
-setInterval(poll,150);loadMap();
+setInterval(poll,150);setInterval(pollCamera,2000);loadMap();
 </script>
 </body>
 </html>"""
@@ -854,9 +1107,10 @@ def api_tracking_status():
 @flask_app.route("/status", methods=["GET"])
 def api_status():
     rs = robot.get_status() if robot and robot.connected else {"connected":False,"dry_run":dry_run}
+    cs = canon.get_status() if canon else {"connected":False}
     return jsonify({"running":is_running,"tracking":tracking_active,"detection_method":DETECTION_METHOD,
                     "yolo_loaded":yolo_model is not None,"mediapipe_loaded":hands_detector is not None,
-                    "robot":rs,"gestures":GESTURE_ID_TO_NAME,
+                    "robot":rs,"canon":cs,"gestures":GESTURE_ID_TO_NAME,
                     "gesture_to_preset":{str(k):v for k,v in GESTURE_TO_PRESET.items()},
                     "presets":{str(k):v["name"] for k,v in PRESETS.items()}})
 
@@ -921,6 +1175,62 @@ def api_map():
         "presets": {str(k):v["name"] for k,v in PRESETS.items()}
     })
 
+# ── Canon Camera API Endpoints ──────────────────────────────────
+
+@flask_app.route("/camera/status", methods=["GET"])
+def api_camera_status():
+    if canon:
+        return jsonify(canon.get_status())
+    return jsonify({"connected": False, "error": "Camera not initialized"}), 503
+
+@flask_app.route("/camera/capture", methods=["POST"])
+def api_camera_capture():
+    """Manually trigger a photo capture from the web dashboard."""
+    if not canon or not canon.connected:
+        return jsonify({"error": "Camera not connected"}), 503
+    filepath = canon.capture()
+    if filepath:
+        return jsonify({"status": "captured", "path": filepath, "count": canon.capture_count})
+    return jsonify({"error": "Capture failed"}), 500
+
+@flask_app.route("/camera/last", methods=["GET"])
+def api_camera_last_photo():
+    """Return the last captured photo as JPEG (for dashboard preview)."""
+    if not canon or not canon.last_capture_path:
+        return jsonify({"error": "No photos captured yet"}), 404
+    try:
+        # First try loading from digiCamControl's preview endpoint
+        import urllib.request
+        preview_url = f"{canon.base_url}/preview.jpg"
+        try:
+            with urllib.request.urlopen(preview_url, timeout=5) as resp:
+                img_data = resp.read()
+                return jsonify({
+                    "frame": base64.b64encode(img_data).decode(),
+                    "path": canon.last_capture_path or "unknown",
+                    "count": canon.capture_count
+                })
+        except Exception:
+            pass
+        
+        # Fallback: try loading the file directly if it exists locally
+        if os.path.exists(canon.last_capture_path):
+            img = cv2.imread(canon.last_capture_path)
+            if img is not None:
+                h, w = img.shape[:2]
+                scale = min(800/w, 600/h)
+                preview = cv2.resize(img, (int(w*scale), int(h*scale)))
+                _, buf = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                return jsonify({
+                    "frame": base64.b64encode(buf).decode(),
+                    "path": canon.last_capture_path,
+                    "count": canon.capture_count
+                })
+        
+        return jsonify({"error": "Preview not available"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @flask_app.route("/shutdown", methods=["POST"])
 def api_shutdown():
     global is_running; is_running = False; return jsonify({"status":"shutting down"})
@@ -935,18 +1245,20 @@ def run_flask():
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
-    global DOBOT_IP, dry_run, robot, is_running
+    global DOBOT_IP, dry_run, robot, canon, is_running
 
-    parser = argparse.ArgumentParser(description="Finger Gesture + Dobot Nova 5 (All-in-One)")
+    parser = argparse.ArgumentParser(description="Finger Gesture + Dobot Nova 5 + Canon EOS 6D (All-in-One)")
     parser.add_argument("--no-robot", action="store_true", help="Vision only, no robot")
+    parser.add_argument("--no-camera", action="store_true", help="Disable Canon camera capture")
     parser.add_argument("--ip", default=DOBOT_IP, help=f"Dobot IP (default: {DOBOT_IP})")
     parser.add_argument("--port", type=int, default=FLASK_PORT, help=f"Web port (default: {FLASK_PORT})")
+    parser.add_argument("--photo-dir", default=CANON_SAVE_DIR, help=f"Photo save directory")
     args = parser.parse_args()
     DOBOT_IP = args.ip; dry_run = args.no_robot
 
     print()
     print("═"*64)
-    print("  Finger Gesture → Dobot Nova 5 (All-in-One)")
+    print("  Finger Gesture → Dobot Nova 5 + Canon EOS 6D")
     print("  Auto-start │ Web dashboard │ Keyboard hotkeys")
     print("═"*64)
     print()
@@ -980,6 +1292,22 @@ def main():
         if not init_robot():
             print("  Running in vision-only mode (robot offline)")
 
+    # ── Canon EOS 6D Setup (via digiCamControl) ───────────────────
+    if CANON_ENABLED and not args.no_camera:
+        print(f"\n  Connecting to Canon EOS 6D via digiCamControl...")
+        canon = CanonCamera(
+            save_dir=args.photo_dir,
+            digicam_url=DIGICAM_URL
+        )
+        if canon.detect():
+            print(f"  [CANON] ✓ Camera ready! Photos → {canon.save_dir}")
+            print(f"  [CANON] Capture gesture: {CANON_CAPTURE_GESTURE} "
+                  f"({GESTURE_ID_TO_NAME.get(CANON_CAPTURE_GESTURE, '?')})")
+        else:
+            print("  [CANON] Camera not available — capture gestures will be ignored")
+    else:
+        print("\n  [CANON] Camera disabled (--no-camera or CANON_ENABLED=False)")
+
     # Start threads
     cam_thread = threading.Thread(target=capture_loop, daemon=True)
     cam_thread.start()
@@ -995,6 +1323,8 @@ def main():
     print(f"  ✓ Detection auto-started")
     print(f"  ✓ Dashboard → http://localhost:{args.port}")
     print(f"  ✓ Stream    → http://localhost:{args.port}/stream")
+    if canon and canon.connected:
+        print(f"  ✓ Canon EOS 6D → Gesture {CANON_CAPTURE_GESTURE} to snap")
     print()
     print("  ┌────────────────────────────────────┐")
     print("  │  Keyboard Controls:                 │")
