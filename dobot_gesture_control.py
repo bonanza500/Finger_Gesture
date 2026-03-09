@@ -13,7 +13,8 @@ Gestures:
   Index finger (1)         → Move robot to Preset 1
   Index + Middle (2)       → Move robot to Preset 2
   Thumb + Index (7)        → Snap photo with Canon EOS 6D
-  Fist (10) / All (5)      → Stop
+  Fist (10)                → Start continuous scan (oscillate between 2 positions)
+  All Fingers / Open Palm (5) → Stop scanning
 
 Usage:
   python dobot_gesture_control_camera.py                    # Full mode
@@ -115,7 +116,7 @@ MOVE_PORT = 30003
 CANON_ENABLED = True                      # Set False to disable camera features
 CANON_SAVE_DIR = r"C:\CapturedPhotos"     # Where digiCamControl saves photos
 CANON_CAPTURE_GESTURE = 7                 # Gesture 7 = "Thumb + Index" → snap photo
-CANON_CAPTURE_COOLDOWN = 30               # Frames to wait between captures (~1 sec)
+CANON_CAPTURE_COOLDOWN = 90               # Frames to wait between captures (~3 sec at 30fps)
 DIGICAM_URL = "http://localhost:5513"     # digiCamControl webserver address
 DIGICAM_CAPTURE_TIMEOUT = 15             # Max seconds to wait for a capture
 
@@ -137,19 +138,33 @@ PRESETS = {
     }
 }
 
-# Gesture to preset mapping
-# Use "camera" as the action for the photo capture gesture
+# ── Continuous Scan Positions (Fist gesture) ─────────────────────
+# Robot oscillates between these two joint targets when Fist is shown.
+# Open palm (All Fingers) stops the scan.
+SCAN_POSITION_1 = {
+    "name": "Scan Pos 1",
+    "joints": [178.93, 107.52, 15.69, 295.53, -92.90, 118.99]
+}
+SCAN_POSITION_2 = {
+    "name": "Scan Pos 2",
+    "joints": [178.82, 84.41, 55.71, 278.61, -92.88, 118.94]
+}
+SCAN_INITIAL_DELAY = 5.0    # Seconds to wait after first move to Pos 1
+SCAN_LOOP_DELAY = 0.5       # Seconds between subsequent moves
+
+# Gesture to action mapping
+# Use "camera" for photo capture, "scan" to start scanning, "stop_scan" to stop
 GESTURE_TO_PRESET = {
-    1: 1,        # Index -> Preset 1
-    2: 2,        # Index + Middle -> Preset 2
-    3: None,     # Index + Middle + Ring -> (unused)
-    4: None,     # Index + Middle + Ring + Pinky -> (unused)
-    5: None,     # All Fingers -> STOP
-    6: None,     # Thumb -> (unused)
-    7: "camera", # Thumb + Index -> SNAP PHOTO
-    8: None,     # Thumb + Index + Middle -> (unused)
-    9: None,     # Thumb + Index + Middle + Ring -> (unused)
-    10: None,    # Fist -> STOP
+    1: 1,           # Index -> Preset 1
+    2: 2,           # Index + Middle -> Preset 2
+    3: None,        # Index + Middle + Ring -> (unused)
+    4: None,        # Index + Middle + Ring + Pinky -> (unused)
+    5: "stop_scan", # All Fingers -> STOP SCANNING
+    6: None,        # Thumb -> (unused)
+    7: "camera",    # Thumb + Index -> SNAP PHOTO
+    8: None,        # Thumb + Index + Middle -> (unused)
+    9: None,        # Thumb + Index + Middle + Ring -> (unused)
+    10: "scan",     # Fist -> START CONTINUOUS SCAN
 }
 
 GESTURE_LABELS = {
@@ -256,6 +271,25 @@ class DobotController:
             return True
         else:
             print(f"  [ROBOT ERROR] Failed to move to preset {preset_num}")
+            return False
+    
+    def move_to_joints(self, joints, name="Custom"):
+        """Move robot to arbitrary joint angles using JointMovJ"""
+        if not self.connected or not self.enabled:
+            return False
+        
+        joint_str = ",".join([f"{j:.2f}" for j in joints])
+        cmd = f"JointMovJ({joint_str})"
+        
+        print(f"  [ROBOT] ► Moving to {name}")
+        resp = self._send_dashboard(cmd)
+        
+        if resp:
+            self.last_move_time = time.time()
+            print(f"  [ROBOT] Response: {resp}")
+            return True
+        else:
+            print(f"  [ROBOT ERROR] Failed to move to {name}")
             return False
     
     def stop(self):
@@ -406,6 +440,7 @@ class CanonCamera:
         self.capture_count = 0
         self._lock = threading.Lock()
         self._flash_until = 0  # Timestamp until which "CAPTURED" overlay shows
+        self._capture_in_progress = False  # Guard against double-fire
     
     def _http_get(self, path, timeout=5):
         """Make a simple GET request to digiCamControl's webserver."""
@@ -460,40 +495,49 @@ class CanonCamera:
             print("  [CANON ERROR] Camera not connected")
             return None
         
-        with self._lock:
-            print("  [CANON] Triggering capture...")
-            
-            # Send capture command
-            result = self._http_get("/?CMD=Capture", timeout=DIGICAM_CAPTURE_TIMEOUT)
-            
-            if result is None:
-                print("  [CANON ERROR] Capture command failed — no response")
-                return None
-            
-            # Wait briefly for the photo to be saved and transferred
-            time.sleep(1.5)
-            
-            # Poll for the last captured filename
-            for attempt in range(10):
-                last_file = self._http_get(
-                    "/?slc=get&param1=lastcaptured&param2=", timeout=5
-                )
-                if last_file and last_file != "-" and last_file.strip():
-                    filepath = last_file.strip()
-                    self.capture_count += 1
-                    self.last_capture_path = filepath
-                    self.last_capture_time = time.time()
-                    self._flash_until = time.time() + 2.0  # Flash for 2 seconds
-                    print(f"  [CANON] ✓ Photo #{self.capture_count}: {filepath}")
-                    return filepath
-                time.sleep(0.5)
-            
-            # If polling didn't return a filename, capture may still have worked
-            self.capture_count += 1
-            self.last_capture_time = time.time()
-            self._flash_until = time.time() + 2.0
-            print(f"  [CANON] ✓ Capture triggered (file path not confirmed)")
-            return "captured"
+        # Prevent overlapping captures (this is the double-fire fix)
+        if self._capture_in_progress:
+            print("  [CANON] Capture already in progress — skipping")
+            return None
+        
+        self._capture_in_progress = True
+        try:
+            with self._lock:
+                print("  [CANON] Triggering capture...")
+                
+                # Send capture command
+                result = self._http_get("/?CMD=Capture", timeout=DIGICAM_CAPTURE_TIMEOUT)
+                
+                if result is None:
+                    print("  [CANON ERROR] Capture command failed — no response")
+                    return None
+                
+                # Wait briefly for the photo to be saved and transferred
+                time.sleep(1.5)
+                
+                # Poll for the last captured filename
+                for attempt in range(10):
+                    last_file = self._http_get(
+                        "/?slc=get&param1=lastcaptured&param2=", timeout=5
+                    )
+                    if last_file and last_file != "-" and last_file.strip():
+                        filepath = last_file.strip()
+                        self.capture_count += 1
+                        self.last_capture_path = filepath
+                        self.last_capture_time = time.time()
+                        self._flash_until = time.time() + 2.0  # Flash for 2 seconds
+                        print(f"  [CANON] ✓ Photo #{self.capture_count}: {filepath}")
+                        return filepath
+                    time.sleep(0.5)
+                
+                # If polling didn't return a filename, capture may still have worked
+                self.capture_count += 1
+                self.last_capture_time = time.time()
+                self._flash_until = time.time() + 2.0
+                print(f"  [CANON] ✓ Capture triggered (file path not confirmed)")
+                return "captured"
+        finally:
+            self._capture_in_progress = False
     
     def is_flashing(self):
         """Returns True if the capture flash indicator should show."""
@@ -526,6 +570,12 @@ sklearn_model = None
 robot = None
 canon = None  # Canon EOS 6D camera controller
 dry_run = False
+
+# ── Scan loop state ──────────────────────────────────────────────
+_scan_active = False          # True while scan loop is running
+_scan_thread = None           # Reference to scan worker thread
+_scan_stop_event = threading.Event()  # Signal to stop the scan loop
+_scan_current_pos = None      # "pos1" or "pos2" — which position we're at/heading to
 
 latest_detection = {
     "hand_detected": False, "gesture_id": None, "gesture_name": "None",
@@ -568,6 +618,9 @@ def stop_tracking():
     if tracking_active:
         tracking_active = False
         reset_debounce()
+        # Stop scan loop if running
+        if _scan_active:
+            stop_scan()
         if robot and robot.connected and robot.enabled:
             robot.jog(None)
         print("  [TRACKING] ■ Stopped")
@@ -582,6 +635,8 @@ def toggle_tracking():
 
 def emergency_stop():
     stop_tracking()
+    if _scan_active:
+        stop_scan()
     if robot and robot.connected:
         robot.stop()
     print("  [EMERGENCY] ■ Robot stopped + tracking paused")
@@ -728,6 +783,95 @@ def detect_mediapipe(frame):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  CONTINUOUS SCAN LOOP (Fist gesture)
+# ═══════════════════════════════════════════════════════════════════
+
+def _scan_loop_worker():
+    """
+    Background thread that oscillates the robot between two joint positions.
+    
+    Sequence:
+      1. Move to Position 1, wait SCAN_INITIAL_DELAY (5s) for robot to arrive
+      2. Move to Position 2, wait SCAN_LOOP_DELAY (0.5s)
+      3. Move to Position 1, wait SCAN_LOOP_DELAY (0.5s)
+      4. Repeat steps 2-3 until stopped by open palm gesture
+    """
+    global _scan_active, _scan_current_pos
+    
+    if not robot or not robot.connected or not robot.enabled:
+        print("  [SCAN ERROR] Robot not available")
+        _scan_active = False
+        return
+    
+    print("  [SCAN] ═══ Starting continuous scan ═══")
+    _scan_active = True
+    
+    # Step 1: Move to Position 1 with long initial delay
+    _scan_current_pos = "pos1"
+    print(f"  [SCAN] → Position 1 (initial move, waiting {SCAN_INITIAL_DELAY}s)")
+    robot.move_to_joints(SCAN_POSITION_1["joints"], SCAN_POSITION_1["name"])
+    robot.current_preset = "scan"
+    
+    # Wait for initial delay (check stop event periodically)
+    if _scan_stop_event.wait(timeout=SCAN_INITIAL_DELAY):
+        print("  [SCAN] ■ Stopped during initial move")
+        _scan_active = False
+        _scan_current_pos = None
+        return
+    
+    # Step 2+: Oscillate between positions
+    cycle = 0
+    while not _scan_stop_event.is_set():
+        cycle += 1
+        
+        # Move to Position 2
+        _scan_current_pos = "pos2"
+        print(f"  [SCAN] → Position 2 (cycle {cycle})")
+        robot.move_to_joints(SCAN_POSITION_2["joints"], SCAN_POSITION_2["name"])
+        
+        if _scan_stop_event.wait(timeout=SCAN_LOOP_DELAY):
+            break
+        
+        # Move to Position 1
+        _scan_current_pos = "pos1"
+        print(f"  [SCAN] → Position 1 (cycle {cycle})")
+        robot.move_to_joints(SCAN_POSITION_1["joints"], SCAN_POSITION_1["name"])
+        
+        if _scan_stop_event.wait(timeout=SCAN_LOOP_DELAY):
+            break
+    
+    print(f"  [SCAN] ■ Scan stopped after {cycle} cycles")
+    _scan_active = False
+    _scan_current_pos = None
+    robot.current_preset = None
+
+
+def start_scan():
+    """Start the continuous scan loop in a background thread."""
+    global _scan_thread, _scan_active
+    
+    if _scan_active:
+        print("  [SCAN] Already scanning")
+        return
+    
+    _scan_stop_event.clear()
+    _scan_thread = threading.Thread(target=_scan_loop_worker, daemon=True)
+    _scan_thread.start()
+
+
+def stop_scan():
+    """Stop the continuous scan loop."""
+    global _scan_active
+    
+    if not _scan_active:
+        return
+    
+    print("  [SCAN] ■ Stop requested")
+    _scan_stop_event.set()
+    # The worker thread will clean up _scan_active and _scan_current_pos
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  ROBOT BRIDGE
 # ═══════════════════════════════════════════════════════════════════
 
@@ -759,7 +903,7 @@ def process_robot(gesture_id):
         
         # ── Camera capture gesture ──────────────────────────────
         if action == "camera":
-            if canon and canon.connected:
+            if canon and canon.connected and not canon._capture_in_progress:
                 # Run capture in a separate thread so it doesn't block detection
                 threading.Thread(target=canon.capture, daemon=True).start()
                 print(f"  [GESTURE] Thumb + Index → SNAP PHOTO")
@@ -767,12 +911,35 @@ def process_robot(gesture_id):
                 _cooldown_counter = CANON_CAPTURE_COOLDOWN
                 return "camera"
             else:
-                print(f"  [GESTURE] Camera gesture detected but camera not connected")
                 _debounce_counter = 0
+                if canon and canon._capture_in_progress:
+                    _cooldown_counter = CANON_CAPTURE_COOLDOWN  # Keep cooling down
                 return robot.current_preset
+        
+        # ── Start continuous scan (Fist) ────────────────────────
+        elif action == "scan":
+            if not _scan_active:
+                start_scan()
+                print(f"  [GESTURE] Fist → START CONTINUOUS SCAN")
+            _debounce_counter = 0
+            _cooldown_counter = COOLDOWN_FRAMES * 3  # Longer cooldown for scan start
+            return "scan"
+        
+        # ── Stop continuous scan (Open Palm) ────────────────────
+        elif action == "stop_scan":
+            if _scan_active:
+                stop_scan()
+                print(f"  [GESTURE] All Fingers → STOP SCAN")
+            _debounce_counter = 0
+            _cooldown_counter = COOLDOWN_FRAMES * 2
+            return None
         
         # ── Robot movement gesture ──────────────────────────────
         elif action and isinstance(action, int):
+            # If scanning, stop it first before moving to a preset
+            if _scan_active:
+                stop_scan()
+                time.sleep(0.2)
             robot.move_to_preset(action)
             _debounce_counter = 0
             _cooldown_counter = COOLDOWN_FRAMES
@@ -875,6 +1042,16 @@ def draw_overlay(frame):
             # Camera icon text
             cv2.putText(out, "PHOTO CAPTURED", (FRAME_WIDTH//2-130, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+        
+        # Scan loop indicator
+        elif _scan_active:
+            pos_label = "POS 1" if _scan_current_pos == "pos1" else "POS 2"
+            pt = f"SCANNING: {pos_label}"
+            pc = (0, 200, 255)  # Orange for scanning
+            # Pulsing scan indicator
+            pulse = int(127 + 128 * np.sin(time.time() * 4))
+            cv2.putText(out, "SCANNING", (FRAME_WIDTH//2-80, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, pulse, 255), 2)
         
         cv2.putText(out,pt,(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,pc,2)
         cv2.putText(out,f"[{det.get('method','')}]",(10,FRAME_HEIGHT-15),cv2.FONT_HERSHEY_SIMPLEX,0.45,(180,180,180),1)
@@ -1061,6 +1238,7 @@ function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   const n=document.getElementById('gestureNum'),m=document.getElementById('gestureName'),j=document.getElementById('gestureJog');
   if(d.hand_detected){n.textContent=d.gesture_id;n.style.color='#58a6ff';m.textContent=d.gesture_name;
     if(d.robot_preset==='camera'){j.textContent='SNAP!';j.style.color='#d29922'}
+    else if(d.robot_preset==='scan'){j.textContent='SCANNING';j.style.color='#ff6b35'}
     else{j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}}
   else{n.textContent='—';n.style.color='#484f58';m.textContent=d.gesture_name||'No hand';j.textContent='—';j.style.color='#484f58'}
   if(d.method==='paused'&&isTracking)updateUI(false);
@@ -1068,13 +1246,14 @@ function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   if(d.robot){const r=d.robot;
     document.getElementById('robotConn').innerHTML=r.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Disconnected';
     document.getElementById('robotEnabled').innerHTML=r.enabled?'<span class="dot green"></span>Yes':'<span class="dot yellow"></span>No';
-    document.getElementById('robotJog').textContent=r.current_preset?'Preset '+r.current_preset:'None';
+    document.getElementById('robotJog').textContent=r.current_preset==='scan'?'SCANNING':r.current_preset?'Preset '+r.current_preset:'None';
     document.getElementById('robotIp').textContent=r.ip||'—'}}).catch(()=>{})}
 function loadMap(){fetch('/config/gesture_map').then(r=>r.json()).then(m=>{
   const names={1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
-  const presets={1:'Preset 1',2:'Preset 2',3:'-',4:'-',5:'-',6:'-',7:'CAMERA',8:'-',9:'-',10:'-'};
+  const presets={1:'Preset 1',2:'Preset 2',3:'-',4:'-',5:'STOP',6:'-',7:'CAMERA',8:'-',9:'-',10:'SCAN'};
+  const specials={'CAMERA':'color:#d29922;font-weight:700','SCAN':'color:#ff6b35;font-weight:700','STOP':'color:#f85149;font-weight:700'};
   const g=document.getElementById('gestureMap');g.innerHTML='';
-  for(let i=1;i<=10;i++){const act=presets[i]||'-';const style=act==='CAMERA'?'color:#d29922;font-weight:700':'';
+  for(let i=1;i<=10;i++){const act=presets[i]||'-';const style=specials[act]||'';
     g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog" style="'+style+'">'+act+'</div>'}})}
 function pollCamera(){fetch('/camera/status').then(r=>r.json()).then(d=>{
   document.getElementById('canonConn').innerHTML=d.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Offline';
@@ -1118,6 +1297,8 @@ def api_status():
 def api_detection():
     with detection_lock: d = latest_detection.copy()
     d["tracking"] = tracking_active
+    d["scan_active"] = _scan_active
+    d["scan_position"] = _scan_current_pos
     if robot: d["robot"] = robot.get_status()
     return jsonify(d)
 
@@ -1145,6 +1326,7 @@ def api_stream():
 
 @flask_app.route("/robot/stop", methods=["POST"])
 def api_stop():
+    if _scan_active: stop_scan()
     if robot and robot.connected: robot.stop(); return jsonify({"status":"stopped"})
     return jsonify({"error":"not connected"}),503
 
@@ -1281,12 +1463,12 @@ def main():
                 else: print(f"  [DRY RUN] MoveJog() → STOP")
                 robot.current_jog = axis
         robot.jog = fake_jog
-        def fake_jog(axis):
-            if axis != robot.current_jog:
-                if axis: print(f"  [DRY RUN] MoveJog({axis})")
-                else: print(f"  [DRY RUN] MoveJog() → STOP")
-                robot.current_jog = axis
-        robot.jog = fake_jog
+        def fake_move_to_joints(joints, name="Custom"):
+            joint_str = ",".join([f"{j:.2f}" for j in joints])
+            print(f"  [DRY RUN] JointMovJ({joint_str})  # {name}")
+            robot.last_move_time = time.time()
+            return True
+        robot.move_to_joints = fake_move_to_joints
     else:
         print(f"\n  Connecting to Dobot Nova at {DOBOT_IP}...")
         if not init_robot():
@@ -1345,6 +1527,7 @@ def main():
         print("\n  [!] Ctrl+C detected")
     finally:
         is_running = False; time.sleep(0.3)
+        if _scan_active: stop_scan()
         if robot and not dry_run: robot.disconnect()
         if camera: camera.release()
         if hands_detector: hands_detector.close()
