@@ -213,6 +213,5 @@ Uses MediaPipe Hands for landmark detection:
 4. Train custom SVM model for improved accuracy
 5. Add gesture sequences for complex commands
 
-## License
 
-MIT
+
