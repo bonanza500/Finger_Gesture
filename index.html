@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finger Gesture Control</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+        h1 { color: #667eea; margin-bottom: 20px; font-size: 28px; text-align: center; }
+        .status { padding: 15px; background: #e6f7ff; border-left: 4px solid #1890ff; margin-bottom: 20px; border-radius: 4px; }
+        .status.error { background: #fff1f0; border-color: #ff4d4f; }
+        .status.success { background: #f6ffed; border-color: #52c41a; }
+        .video-container { width: 100%; margin-bottom: 20px; background: #000; border-radius: 8px; overflow: hidden; position: relative; }
+        .video-container img { width: 100%; display: block; }
+        .gesture-display { text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; margin-bottom: 20px; color: white; }
+        .gesture-number { font-size: 80px; font-weight: bold; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        .gesture-name { font-size: 24px; margin-bottom: 5px; }
+        .gesture-fingers { font-size: 16px; opacity: 0.9; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .info-card { padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0; }
+        .info-card h3 { font-size: 12px; color: #8c8c8c; margin-bottom: 8px; text-transform: uppercase; }
+        .info-card .value { font-size: 18px; font-weight: 600; color: #262626; }
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        button { padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s; }
+        button:hover { background: #5568d3; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+        button:active { transform: translateY(0); }
+        button.danger { background: #ff4d4f; }
+        button.danger:hover { background: #ff7875; }
+        .gesture-legend { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .gesture-legend h3 { font-size: 14px; margin-bottom: 10px; color: #667eea; }
+        .gesture-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; font-size: 12px; }
+        .gesture-item { padding: 8px; background: white; border-radius: 4px; border: 1px solid #e0e0e0; }
+        .gesture-item strong { color: #667eea; }
+        .log { margin-top: 20px; padding: 15px; background: #fafafa; border-radius: 8px; max-height: 150px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 11px; }
+        .log-entry { margin-bottom: 5px; color: #595959; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖐️ Finger Gesture Control (1-10)</h1>
+        
+        <div id="status" class="status">
+            <strong>Status:</strong> <span id="statusText">Connecting...</span>
+        </div>
+
+        <div class="gesture-display">
+            <div class="gesture-number" id="gestureNumber">-</div>
+            <div class="gesture-name" id="gestureName">No hand detected</div>
+            <div class="gesture-fingers" id="gestureFingers">Show your hand to camera</div>
+        </div>
+
+        <div class="video-container">
+            <img id="videoFeed" src="" alt="Camera feed will appear here" style="display:none;">
+        </div>
+
+        <div class="info-grid">
+            <div class="info-card">
+                <h3>Hand Detected</h3>
+                <div class="value" id="handDetected">No</div>
+            </div>
+            <div class="info-card">
+                <h3>Confidence</h3>
+                <div class="value" id="confidence">-</div>
+            </div>
+            <div class="info-card">
+                <h3>Method</h3>
+                <div class="value" id="method">-</div>
+            </div>
+        </div>
+
+        <div class="gesture-legend">
+            <h3>📋 Gesture Reference</h3>
+            <div class="gesture-list">
+                <div class="gesture-item"><strong>1</strong> = Index</div>
+                <div class="gesture-item"><strong>2</strong> = Index + Middle</div>
+                <div class="gesture-item"><strong>3</strong> = Index + Middle + Ring</div>
+                <div class="gesture-item"><strong>4</strong> = Index + Middle + Ring + Pinky</div>
+                <div class="gesture-item"><strong>5</strong> = All Fingers</div>
+                <div class="gesture-item"><strong>6</strong> = Thumb</div>
+                <div class="gesture-item"><strong>7</strong> = Thumb + Index</div>
+                <div class="gesture-item"><strong>8</strong> = Thumb + Index + Middle</div>
+                <div class="gesture-item"><strong>9</strong> = Thumb + Index + Middle + Ring</div>
+                <div class="gesture-item"><strong>10</strong> = Fist</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button onclick="startTracking()">▶ Start Tracking</button>
+            <button onclick="stopTracking()">⏸ Stop Tracking</button>
+            <button onclick="testConnection()">🔄 Test Connection</button>
+            <button class="danger" onclick="clearLog()">🗑 Clear Log</button>
+        </div>
+
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        const SERVER_URL = 'http://localhost:5001';
+        let trackingInterval = null;
+        let streamUpdateInterval = null;
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.insertBefore(entry, logDiv.firstChild);
+            console.log(message);
+        }
+
+        function updateStatus(text, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            statusText.textContent = text;
+            statusDiv.className = 'status ' + type;
+        }
+
+        async function testConnection() {
+            log('Testing connection to finger gesture server...');
+            log('Attempting to connect to: ' + SERVER_URL);
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+                
+                const response = await fetch(`${SERVER_URL}/status`, {
+                    method: 'GET',
+                    mode: 'cors',
+                    cache: 'no-cache',
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                log(`✓ Connected! Camera: ${data.width}x${data.height}, Model: ${data.model_loaded}`);
+                log(`✓ Gestures available: ${Object.keys(data.gestures).length}`);
+                updateStatus('Connected to finger gesture server', 'success');
+                return true;
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    log(`✗ Connection timeout - is finger_server.py running?`);
+                } else {
+                    log(`✗ Connection failed: ${error.message}`);
+                }
+                log('Make sure finger_server.py is running on localhost:5001');
+                log('Test in browser: http://localhost:5001/status');
+                updateStatus('Cannot connect - Start finger_server.py first', 'error');
+                return false;
+            }
+        }
+
+        async function updateDetection() {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2000);
+                
+                const response = await fetch(`${SERVER_URL}/detection`, {
+                    signal: controller.signal,
+                    mode: 'cors'
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+
+                if (data.hand_detected) {
+                    document.getElementById('gestureNumber').textContent = data.gesture_id || '-';
+                    document.getElementById('gestureName').textContent = data.gesture_name || 'Unknown';
+                    
+                    const fingersText = data.raised_fingers.length > 0 
+                        ? `Raised: ${data.raised_fingers.join(', ')}`
+                        : 'No fingers raised (Fist)';
+                    document.getElementById('gestureFingers').textContent = fingersText;
+                    
+                    document.getElementById('handDetected').textContent = 'Yes';
+                    document.getElementById('confidence').textContent = `${(data.confidence * 100).toFixed(0)}%`;
+                    document.getElementById('method').textContent = data.method || 'MediaPipe';
+                } else {
+                    document.getElementById('gestureNumber').textContent = '-';
+                    document.getElementById('gestureName').textContent = 'No hand detected';
+                    document.getElementById('gestureFingers').textContent = 'Show your hand to camera';
+                    document.getElementById('handDetected').textContent = 'No';
+                    document.getElementById('confidence').textContent = '-';
+                    document.getElementById('method').textContent = '-';
+                }
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('Detection update error:', error);
+                    if (trackingInterval) {
+                        stopTracking();
+                        log('Tracking stopped due to connection error');
+                        updateStatus('Connection lost - click Test Connection to retry', 'error');
+                    }
+                }
+            }
+        }
+
+        async function updateStream() {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                
+                const response = await fetch(`${SERVER_URL}/frame/annotated`, {
+                    signal: controller.signal,
+                    mode: 'cors'
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                if (data.frame) {
+                    const img = document.getElementById('videoFeed');
+                    img.src = 'data:image/jpeg;base64,' + data.frame;
+                    img.style.display = 'block';
+                }
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('Stream update error:', error);
+                }
+            }
+        }
+
+        function startTracking() {
+            if (trackingInterval) {
+                log('Tracking already running');
+                return;
+            }
+            log('Starting tracking...');
+            updateStatus('Tracking active', 'success');
+            trackingInterval = setInterval(updateDetection, 100);  // 10 Hz
+            streamUpdateInterval = setInterval(updateStream, 200);  // 5 Hz
+        }
+
+        function stopTracking() {
+            if (trackingInterval) {
+                clearInterval(trackingInterval);
+                trackingInterval = null;
+            }
+            if (streamUpdateInterval) {
+                clearInterval(streamUpdateInterval);
+                streamUpdateInterval = null;
+            }
+            log('Tracking stopped');
+            updateStatus('Tracking stopped', 'info');
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Auto-connect on load
+        window.addEventListener('load', async () => {
+            log('Finger Gesture plugin loaded');
+            log('Checking server connection...');
+            const connected = await testConnection();
+            if (connected) {
+                log('Auto-starting tracking...');
+                startTracking();
+            } else {
+                log('Server not available. Start finger_server.py and click "Test Connection"');
+                updateStatus('Server not running - Start finger_server.py first', 'error');
+            }
+        });
+
+        // Cleanup on unload
+        window.addEventListener('beforeunload', () => {
+            stopTracking();
+        });
+    </script>
+</body>
+</html>

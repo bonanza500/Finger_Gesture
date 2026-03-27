@@ -1,0 +1,186 @@
+{
+  "name": "FingerGesture",
+  "description": "10-gesture finger control via webcam using MediaPipe",
+  "description_en": "10-gesture finger control via webcam using MediaPipe",
+  "func": [
+    {
+      "funcName": "FingerInit",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "shape_statement",
+      "func_block_msgs": [
+        {
+          "message": "Initialize Finger Gesture System",
+          "message_en": "Initialize Finger Gesture System",
+          "func_params": []
+        }
+      ],
+      "func_block_code": ["FingerInit()\n"],
+      "func_script_msgs": [
+        {
+          "message": "Initialize finger gesture detection system and connect to server",
+          "message_en": "Initialize finger gesture detection system and connect to server",
+          "funcShow": "FingerInit()"
+        }
+      ]
+    },
+    {
+      "funcName": "GetGesture",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "output_string",
+      "func_block_msgs": [
+        {
+          "message": "Get detected finger gesture",
+          "message_en": "Get detected finger gesture",
+          "func_params": []
+        }
+      ],
+      "func_block_code": ["GetGesture()"],
+      "func_script_msgs": [
+        {
+          "message": "Get currently detected finger gesture (returns gesture_id, gesture_name, confidence)",
+          "message_en": "Get currently detected finger gesture (returns gesture_id, gesture_name, confidence)",
+          "funcShow": "GetGesture()"
+        }
+      ]
+    },
+    {
+      "funcName": "GetFingerStates",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "output_string",
+      "func_block_msgs": [
+        {
+          "message": "Get finger states",
+          "message_en": "Get finger states",
+          "func_params": []
+        }
+      ],
+      "func_block_code": ["GetFingerStates()"],
+      "func_script_msgs": [
+        {
+          "message": "Get individual finger states (returns table with thumb, index, middle, ring, pinky)",
+          "message_en": "Get individual finger states (returns table with thumb, index, middle, ring, pinky)",
+          "funcShow": "GetFingerStates()"
+        }
+      ]
+    },
+    {
+      "funcName": "MoveByGesture",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "shape_statement",
+      "func_block_msgs": [
+        {
+          "message": "Move robot by gesture %1",
+          "message_en": "Move robot by gesture %1",
+          "func_params": [
+            {
+              "param_type": "input_value",
+              "data_type": "math_number",
+              "name": "gesture_id",
+              "default": ""
+            }
+          ]
+        }
+      ],
+      "func_block_code": ["MoveByGesture({gesture_id})\n"],
+      "func_script_msgs": [
+        {
+          "message": "Move robot based on detected finger gesture (1=UP, 2=FORWARD, 3=RIGHT, 4=DOWN, 6=LEFT, 7=BACKWARD, 8=ROTATE_CW, 9=ROTATE_CCW, 5/10=STOP)",
+          "message_en": "Move robot based on detected finger gesture (1=UP, 2=FORWARD, 3=RIGHT, 4=DOWN, 6=LEFT, 7=BACKWARD, 8=ROTATE_CW, 9=ROTATE_CCW, 5/10=STOP)",
+          "funcShow": "MoveByGesture()",
+          "func_params": [
+            {
+              "param_description": "Gesture ID (1-10, optional - auto-detects if not provided)",
+              "param_description_en": "Gesture ID (1-10, optional - auto-detects if not provided)",
+              "int_range": [1, 10],
+              "isDefault": true,
+              "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "funcName": "StartGestureControl",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "shape_statement",
+      "func_block_msgs": [
+        {
+          "message": "Start gesture control for %1 seconds",
+          "message_en": "Start gesture control for %1 seconds",
+          "func_params": [
+            {
+              "param_type": "input_value",
+              "data_type": "math_number",
+              "name": "duration",
+              "default": "30"
+            }
+          ]
+        }
+      ],
+      "func_block_code": ["StartGestureControl({duration})\n"],
+      "func_script_msgs": [
+        {
+          "message": "Start continuous gesture control mode for specified duration",
+          "message_en": "Start continuous gesture control mode for specified duration",
+          "funcShow": "StartGestureControl()",
+          "func_params": [
+            {
+              "param_description": "Duration in seconds (default 30)",
+              "param_description_en": "Duration in seconds (default 30)",
+              "int_range": [1, 300],
+              "isDefault": false,
+              "type": "int"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "funcName": "GripperByFingerCount",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "shape_statement",
+      "func_block_msgs": [
+        {
+          "message": "Control gripper by finger count",
+          "message_en": "Control gripper by finger count",
+          "func_params": []
+        }
+      ],
+      "func_block_code": ["GripperByFingerCount()\n"],
+      "func_script_msgs": [
+        {
+          "message": "Control gripper based on number of raised fingers (4-5 fingers = open, 0-1 fingers = close)",
+          "message_en": "Control gripper based on number of raised fingers (4-5 fingers = open, 0-1 fingers = close)",
+          "funcShow": "GripperByFingerCount()"
+        }
+      ]
+    },
+    {
+      "funcName": "TestFingerGesture",
+      "func_page": false,
+      "func_color": "#764ba2",
+      "func_block_type": "shape_statement",
+      "func_block_msgs": [
+        {
+          "message": "Test finger gesture system",
+          "message_en": "Test finger gesture system",
+          "func_params": []
+        }
+      ],
+      "func_block_code": ["TestFingerGesture()\n"],
+      "func_script_msgs": [
+        {
+          "message": "Run finger gesture system test (displays gestures for 5 seconds)",
+          "message_en": "Run finger gesture system test (displays gestures for 5 seconds)",
+          "funcShow": "TestFingerGesture()"
+        }
+      ]
+    }
+  ]
+}
