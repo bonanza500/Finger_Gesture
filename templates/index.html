@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Finger Gesture → Dobot Nova 5</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: #0d1117;
+        color: #e6edf3;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+
+      .header {
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        padding: 16px 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .header h1 {
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .header h1 span {
+        color: #58a6ff;
+      }
+
+      .header .subtitle {
+        color: #8b949e;
+        font-size: 13px;
+      }
+
+      .main {
+        display: flex;
+        gap: 20px;
+        padding: 20px 24px;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .video-panel {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .video-panel img {
+        width: 100%;
+        border-radius: 12px;
+        border: 2px solid #30363d;
+        display: block;
+        background: #000;
+      }
+
+      .side-panel {
+        width: 320px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 16px;
+      }
+
+      .card h3 {
+        font-size: 14px;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 12px;
+      }
+
+      .status-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 0;
+        font-size: 14px;
+      }
+
+      .status-row .label {
+        color: #8b949e;
+      }
+
+      .status-row .value {
+        font-weight: 600;
+      }
+
+      .dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 6px;
+      }
+
+      .dot.green {
+        background: #3fb950;
+        box-shadow: 0 0 6px #3fb950;
+      }
+
+      .dot.red {
+        background: #f85149;
+        box-shadow: 0 0 6px #f85149;
+      }
+
+      .dot.yellow {
+        background: #d29922;
+        box-shadow: 0 0 6px #d29922;
+      }
+
+      .btn {
+        width: 100%;
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .btn:active {
+        transform: scale(0.97);
+      }
+
+      .btn-stop {
+        background: #da3633;
+        color: #fff;
+      }
+
+      .btn-stop:hover {
+        background: #f85149;
+      }
+
+      .btn-start {
+        background: #238636;
+        color: #fff;
+      }
+
+      .btn-start:hover {
+        background: #3fb950;
+      }
+
+      .btn-outline {
+        background: transparent;
+        color: #58a6ff;
+        border: 1px solid #58a6ff;
+      }
+
+      .btn-outline:hover {
+        background: #58a6ff22;
+      }
+
+      .btn-danger {
+        background: transparent;
+        color: #f85149;
+        border: 1px solid #f85149;
+      }
+
+      .btn-danger:hover {
+        background: #f8514922;
+      }
+
+      .btn-group {
+        display: flex;
+        gap: 8px;
+      }
+
+      .btn-group .btn {
+        flex: 1;
+      }
+
+      .gesture-grid {
+        display: grid;
+        grid-template-columns: 40px 1fr 50px;
+        gap: 4px 10px;
+        font-size: 13px;
+        align-items: center;
+      }
+
+      .gesture-grid .gid {
+        color: #58a6ff;
+        font-weight: 700;
+        text-align: center;
+      }
+
+      .gesture-grid .gname {
+        color: #c9d1d9;
+      }
+
+      .gesture-grid .gjog {
+        color: #3fb950;
+        font-family: monospace;
+        font-weight: 600;
+        text-align: center;
+      }
+
+      .big-gesture {
+        text-align: center;
+        padding: 8px 0;
+      }
+
+      .big-gesture .number {
+        font-size: 48px;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .big-gesture .name {
+        font-size: 16px;
+        color: #8b949e;
+        margin-top: 4px;
+      }
+
+      .big-gesture .jog {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 2px;
+      }
+
+      .hotkey {
+        display: inline-block;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: monospace;
+        font-size: 12px;
+        color: #c9d1d9;
+        margin: 0 2px;
+      }
+
+      @media (max-width: 768px) {
+        .main {
+          flex-direction: column;
+        }
+
+        .side-panel {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="header">
+      <div>
+        <h1>Finger Gesture → <span>Dobot Nova 5</span></h1>
+        <div class="subtitle">MediaPipe │ TCP/IP Robot Control</div>
+      </div>
+      <div id="trackingBadge" style="font-size: 14px; font-weight: 600">
+        <span class="dot green"></span> TRACKING
+      </div>
+    </div>
+    <div class="main">
+      <div class="video-panel">
+        <img id="stream" src="/video_feed" alt="Live Stream" />
+      </div>
+      <div class="side-panel">
+        <div class="card">
+          <h3>Current Gesture</h3>
+          <div class="big-gesture">
+            <div class="number" id="gestureNum">—</div>
+            <div class="name" id="gestureName">Waiting...</div>
+            <div class="jog" id="gestureJog" style="color: #3fb950">—</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Tracking Control</h3>
+          <button
+            class="btn btn-stop"
+            id="btnTracking"
+            onclick="toggleTracking()"
+          >
+            ■ Stop Tracking
+          </button>
+          <div style="height: 8px"></div>
+          <button class="btn btn-outline" onclick="emergencyStop()">
+            Emergency Stop Robot
+          </button>
+          <div
+            style="
+              margin-top: 12px;
+              font-size: 12px;
+              color: #8b949e;
+              line-height: 1.6;
+            "
+          >
+            Keyboard: <span class="hotkey">SPACE</span> Toggle tracking
+            <span class="hotkey">S</span> Emergency stop
+            <span class="hotkey">ESC</span> Exit
+          </div>
+        </div>
+        <div class="card">
+          <h3>Robot Status</h3>
+          <div class="status-row">
+            <span class="label">Connection</span
+            ><span class="value" id="robotConn">—</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Enabled</span
+            ><span class="value" id="robotEnabled">—</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Current Preset</span
+            ><span class="value" id="robotJog">—</span>
+          </div>
+          <div class="status-row">
+            <span class="label">IP</span
+            ><span class="value" id="robotIp">—</span>
+          </div>
+          <div style="height: 8px"></div>
+          <div class="btn-group">
+            <button
+              class="btn btn-start"
+              onclick="enableRobot()"
+              style="font-size: 12px; padding: 8px"
+            >
+              Enable
+            </button>
+            <button
+              class="btn btn-danger"
+              onclick="disableRobot()"
+              style="font-size: 12px; padding: 8px"
+            >
+              Disable
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Gesture → Preset Map</h3>
+          <div class="gesture-grid" id="gestureMap"></div>
+        </div>
+        <div class="card" id="cameraCard">
+          <h3>Canon EOS 6D</h3>
+          <div class="status-row">
+            <span class="label">Connection</span
+            ><span class="value" id="canonConn">—</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Photos Taken</span
+            ><span class="value" id="canonCount">0</span>
+          </div>
+          <div class="status-row">
+            <span class="label">Last Photo</span
+            ><span
+              class="value"
+              id="canonLast"
+              style="
+                font-size: 11px;
+                max-width: 180px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+              "
+              >—</span
+            >
+          </div>
+          <div class="status-row" id="canonErrRow" style="display: none">
+            <span class="label" style="color: #f85149">Error</span
+            ><span
+              class="value"
+              id="canonErr"
+              style="
+                color: #f85149;
+                font-size: 11px;
+                max-width: 180px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+              "
+              >—</span
+            >
+          </div>
+          <div style="height: 8px"></div>
+          <button
+            class="btn btn-outline"
+            onclick="manualCapture()"
+            style="border-color: #d29922; color: #d29922"
+          >
+            📷 Manual Capture
+          </button>
+          <div style="height: 6px"></div>
+          <button
+            class="btn btn-outline"
+            id="btnReconnect"
+            onclick="reconnectCamera()"
+            style="
+              border-color: #58a6ff;
+              color: #58a6ff;
+              font-size: 12px;
+              padding: 8px;
+            "
+          >
+            ↺ Reconnect Camera
+          </button>
+          <div style="height: 8px"></div>
+          <img
+            id="lastPhoto"
+            style="
+              width: 100%;
+              border-radius: 8px;
+              display: none;
+              border: 1px solid #30363d;
+            "
+          />
+        </div>
+      </div>
+    </div>
+    <script>
+      let isTracking = true;
+
+      function postAction(action, body = {}) {
+        return fetch(`/control`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, ...body }),
+        }).then((r) => r.json());
+      }
+
+      function toggleTracking() {
+        postAction("toggle_tracking").then((data) => {
+          if (data.success) {
+            updateTrackingUI(data.tracking_active);
+          }
+        });
+      }
+
+      function emergencyStop() {
+        postAction("emergency_stop").then(() => {
+          updateTrackingUI(false);
+        });
+      }
+
+      function manualCapture() {
+        fetch("/capture", { method: "POST" })
+          .then((r) => r.json())
+          .then((d) => {
+            if (!d.success) {
+              alert("Capture failed: " + (d.message || "unknown error"));
+            }
+            // Status poll will update the UI
+          })
+          .catch(() => alert("Camera request failed."));
+      }
+
+      function moveRobotToPreset(presetIndex) {
+        fetch("/move", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preset: presetIndex }),
+        });
+      }
+
+      function updateTrackingUI(isNowTracking) {
+        isTracking = isNowTracking;
+        const btn = document.getElementById("btnTracking");
+        const badge = document.getElementById("trackingBadge");
+        if (isTracking) {
+          btn.className = "btn btn-stop";
+          btn.innerHTML = "■ Stop Tracking";
+          badge.innerHTML = '<span class="dot green"></span> TRACKING';
+        } else {
+          btn.className = "btn btn-start";
+          btn.innerHTML = "► Start Tracking";
+          badge.innerHTML = '<span class="dot red"></span> PAUSED';
+        }
+      }
+
+      function pollStatus() {
+        fetch("/status")
+          .then((r) => r.json())
+          .then((data) => {
+            // Update tracking status
+            if (data.tracking_active !== isTracking) {
+              updateTrackingUI(data.tracking_active);
+            }
+
+            // Update detection status
+            const det = data.detection;
+            const gestureNumEl = document.getElementById("gestureNum");
+            const gestureNameEl = document.getElementById("gestureName");
+
+            if (det.current_gesture) {
+              gestureNumEl.textContent = det.current_gesture;
+              gestureNumEl.style.color = "#58a6ff";
+              const heldFor = (Date.now() / 1000 - det.gesture_since).toFixed(
+                1,
+              );
+              gestureNameEl.textContent = `Held for ${heldFor}s`;
+            } else {
+              gestureNumEl.textContent = "—";
+              gestureNumEl.style.color = "#484f58";
+              gestureNameEl.textContent = "No hand detected";
+            }
+
+            // Update robot status
+            const robot = data.robot;
+            document.getElementById("robotConn").innerHTML = robot.connected
+              ? '<span class="dot green"></span>Connected'
+              : '<span class="dot red"></span>Disconnected';
+            document.getElementById("robotEnabled").innerHTML = robot.is_moving
+              ? '<span class="dot yellow"></span>Moving'
+              : '<span class="dot green"></span>Idle';
+
+            const presetName =
+              data.presets[robot.current_preset_index + 1] ||
+              `Preset ${robot.current_preset_index}`;
+            document.getElementById("robotJog").textContent =
+              robot.current_preset_index !== null ? `→ ${presetName}` : "None";
+            document.getElementById("robotIp").textContent = robot.ip || "—";
+
+            // Update gesture map
+            const gestureMapEl = document.getElementById("gestureMap");
+            let mapHtml = "";
+            for (const [id, name] of Object.entries(data.presets)) {
+              mapHtml += `
+                    <div class="gid">${id}</div>
+                    <div class="gname">${name}</div>
+                    <div class="gjog" style="color: #3fb950;">PRESET</div>`;
+            }
+            gestureMapEl.innerHTML = mapHtml;
+          })
+          .catch(() => {
+            document.getElementById("robotConn").innerHTML =
+              '<span class="dot red"></span>Server Down';
+          });
+      }
+
+      document.addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+          e.preventDefault();
+          toggleTracking();
+        }
+        if (e.key === "s" || e.key === "S") {
+          emergencyStop();
+        }
+      });
+
+      setInterval(pollStatus, 250);
+      // Initial load
+      pollStatus();
+    </script>
+  </body>
+</html>
