@@ -13,8 +13,6 @@ Gestures:
   Index finger (1)         → Move robot to Preset 1
   Index + Middle (2)       → Move robot to Preset 2
   Thumb + Index (7)        → (unused — shutter fires automatically after preset move)
-  Fist (10)                → Start continuous scan (oscillate between 2 positions)
-  All Fingers / Open Palm (5) → Stop scanning
 
 Usage:
   python dobot_gesture_control_camera.py                    # Full mode
@@ -153,9 +151,12 @@ NO_HAND_STOP_DELAY = 10
 FLASK_PORT = 5001
 
 # ── DobotStudio Pro presets.json path ───────────────────────────
-# The file is written by DobotStudio Pro at this location.
-# Change the path here if your installation is elsewhere.
-DOBOTSTUDIO_PRESETS_JSON = r"C:\Program Files (x86)\DobotStudio Pro\presets.json"
+# Prefer a presets.json sitting next to this script (repo-local copy).
+# Falls back to the default DobotStudio Pro installation path if not found.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_LOCAL_PRESETS = os.path.join(_SCRIPT_DIR, "presets.json")
+_DOBOTSTUDIO_PRESETS = r"C:\Program Files (x86)\DobotStudio Pro\presets.json"
+DOBOTSTUDIO_PRESETS_JSON = _LOCAL_PRESETS if os.path.exists(_LOCAL_PRESETS) else _DOBOTSTUDIO_PRESETS
 
 # Fallback hardcoded values (used only when the JSON file cannot be read)
 _FALLBACK_INITIAL_POSE = {
@@ -236,37 +237,16 @@ def load_presets_from_json(path=DOBOTSTUDIO_PRESETS_JSON):
 INITIAL_POSE = _FALLBACK_INITIAL_POSE
 PRESETS      = _FALLBACK_PRESETS
 
-# ── Continuous Scan Positions (Fist gesture) ─────────────────────
-# Robot oscillates between these two joint targets when Fist is shown.
-# Open palm (All Fingers) stops the scan.
-SCAN_POSITION_1 = {
-    "name": "Scan Pos 1",
-    "joints": [178.93, 107.52, 15.69, 295.53, -92.90, 118.99]
-}
-SCAN_POSITION_2 = {
-    "name": "Scan Pos 2",
-    "joints": [178.82, 84.41, 55.71, 278.61, -92.88, 118.94]
-}
-SCAN_INITIAL_DELAY = 5.0    # Seconds to wait after first move to Pos 1
-SCAN_LOOP_DELAY = 0.5       # Seconds between subsequent moves
 
 # Gesture to action mapping — rebuilt at startup after presets are loaded
-# Use "camera" for photo capture, "scan" to start scanning, "stop_scan" to stop
 def build_gesture_map(presets):
     """Build GESTURE_TO_PRESET from however many presets were loaded.
-    Gesture 7 (Thumb+Index) → direct camera shutter (instant capture with countdown).
-    Auto-capture ALSO fires after every preset move (gestures 1-4) when robot is active.
+    Gesture 7 (Thumb+Index) → unused (shutter fires automatically after preset move).
     """
     mapping = {}
     for slot in range(1, 11):
         if slot in presets:
             mapping[slot] = slot           # gesture N → Preset N
-        elif slot == 5:
-            mapping[slot] = "stop_scan"    # All Fingers → STOP SCANNING
-        elif slot == 7:
-            mapping[slot] = None           # unused — shutter fires automatically after preset move
-        elif slot == 10:
-            mapping[slot] = "scan"         # Fist → START CONTINUOUS SCAN
         else:
             mapping[slot] = None
     return mapping
@@ -611,8 +591,7 @@ class CanonCamera:
         if result is None:
             self.connected = False
             return None
-        time.sleep(1.5)
-        for _ in range(10):
+        for _ in range(20):
             last = self._http_get("/?slc=get&param1=lastcaptured&param2=", timeout=5)
             if last and last.strip() and last.strip() != "-":
                 return last.strip()
@@ -1044,12 +1023,6 @@ robot = None
 canon = None  # Canon EOS 6D camera controller
 dry_run = False
 
-# ── Scan loop state ──────────────────────────────────────────────
-_scan_active = False          # True while scan loop is running
-_scan_thread = None           # Reference to scan worker thread
-_scan_stop_event = threading.Event()  # Signal to stop the scan loop
-_scan_current_pos = None      # "pos1" or "pos2" — which position we're at/heading to
-
 # ── Countdown state ──────────────────────────────────────────────
 _countdown_state = {
     "active": False,
@@ -1070,6 +1043,7 @@ _debounce_counter = 0
 _debounce_last_gesture = None
 _cooldown_counter = 0
 _no_hand_counter = 0
+_waiting_for_capture = False   # True from gesture trigger until photo is confirmed taken
 
 _last_full_detection = {}
 _full_detection_lock = threading.Lock()
@@ -1080,11 +1054,12 @@ _full_detection_lock = threading.Lock()
 # ═══════════════════════════════════════════════════════════════════
 
 def reset_debounce():
-    global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter
+    global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter, _waiting_for_capture
     _debounce_counter = 0
     _debounce_last_gesture = None
     _cooldown_counter = 0
     _no_hand_counter = 0
+    _waiting_for_capture = False
 
 
 def start_tracking():
@@ -1100,9 +1075,6 @@ def stop_tracking():
     if tracking_active:
         tracking_active = False
         reset_debounce()
-        # Stop scan loop if running
-        if _scan_active:
-            stop_scan()
         abort_countdown()
         if robot and robot.connected and robot.enabled:
             robot.jog(None)
@@ -1118,8 +1090,6 @@ def toggle_tracking():
 
 def emergency_stop():
     stop_tracking()
-    if _scan_active:
-        stop_scan()
     abort_countdown()
     if robot and robot.connected:
         robot.stop()
@@ -1335,9 +1305,15 @@ def countdown_and_capture(preset_num):
     print(f"\n  [COUNTDOWN] ══ Preset {preset_num} ══ Starting auto-capture sequence")
 
     # ── 1. Settle ────────────────────────────────────────────────
+    # Only set active/phase if not already set by the caller (process_robot
+    # pre-sets these to avoid the race window between thread spawn and first lock).
     with _countdown_lock:
-        _countdown_state.update({"active": True, "phase": "settling",
-                                  "number": None, "preset": preset_num})
+        if not _countdown_state.get("active"):
+            _countdown_state.update({"active": True, "phase": "settling",
+                                      "number": None, "preset": preset_num})
+        else:
+            # Already marked active by caller — just ensure phase is correct
+            _countdown_state.update({"phase": "settling", "number": None, "preset": preset_num})
     print(f"  [COUNTDOWN] ⏳ Settling {ROBOT_SETTLE_DELAY}s for robot to reach position...")
     time.sleep(ROBOT_SETTLE_DELAY)
 
@@ -1363,6 +1339,7 @@ def countdown_and_capture(preset_num):
         time.sleep(COUNTDOWN_NUMBER_DELAY)
 
     # ── 4. FIRE SHUTTER — immediately, no extra speech ───────────
+    global _waiting_for_capture
     with _countdown_lock:
         _countdown_state.update({"phase": "capturing", "number": None})
 
@@ -1371,6 +1348,8 @@ def countdown_and_capture(preset_num):
 
     if canon is None:
         print("  [COUNTDOWN] ✗ Canon not initialized — set CANON_ENABLED=True and restart")
+        _waiting_for_capture = False
+        _cooldown_counter = 0
     else:
         # Wait for any overlapping capture to clear
         waited = 0
@@ -1384,6 +1363,8 @@ def countdown_and_capture(preset_num):
             canon.detect(silent=False)
 
         result = canon.capture()
+        _waiting_for_capture = False   # unblock gestures — photo taken (or definitively failed)
+        _cooldown_counter = 0          # discard any remaining frame-based cooldown
         if result:
             print(f"  [COUNTDOWN] ✓ Photo #{canon.capture_count} saved → {result}")
         else:
@@ -1410,102 +1391,17 @@ def abort_countdown():
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  CONTINUOUS SCAN LOOP (Fist gesture)
-# ═══════════════════════════════════════════════════════════════════
-
-def _scan_loop_worker():
-    """
-    Background thread that oscillates the robot between two joint positions.
-    
-    Sequence:
-      1. Move to Position 1, wait SCAN_INITIAL_DELAY (5s) for robot to arrive
-      2. Move to Position 2, wait SCAN_LOOP_DELAY (0.5s)
-      3. Move to Position 1, wait SCAN_LOOP_DELAY (0.5s)
-      4. Repeat steps 2-3 until stopped by open palm gesture
-    """
-    global _scan_active, _scan_current_pos
-    
-    if not robot or not robot.connected or not robot.enabled:
-        print("  [SCAN ERROR] Robot not available")
-        _scan_active = False
-        return
-    
-    print("  [SCAN] ═══ Starting continuous scan ═══")
-    _scan_active = True
-    
-    # Step 1: Move to Position 1 with long initial delay
-    _scan_current_pos = "pos1"
-    print(f"  [SCAN] → Position 1 (initial move, waiting {SCAN_INITIAL_DELAY}s)")
-    robot.move_to_joints(SCAN_POSITION_1["joints"], SCAN_POSITION_1["name"])
-    robot.current_preset = "scan"
-    
-    # Wait for initial delay (check stop event periodically)
-    if _scan_stop_event.wait(timeout=SCAN_INITIAL_DELAY):
-        print("  [SCAN] ■ Stopped during initial move")
-        _scan_active = False
-        _scan_current_pos = None
-        return
-    
-    # Step 2+: Oscillate between positions
-    cycle = 0
-    while not _scan_stop_event.is_set():
-        cycle += 1
-        
-        # Move to Position 2
-        _scan_current_pos = "pos2"
-        print(f"  [SCAN] → Position 2 (cycle {cycle})")
-        robot.move_to_joints(SCAN_POSITION_2["joints"], SCAN_POSITION_2["name"])
-        
-        if _scan_stop_event.wait(timeout=SCAN_LOOP_DELAY):
-            break
-        
-        # Move to Position 1
-        _scan_current_pos = "pos1"
-        print(f"  [SCAN] → Position 1 (cycle {cycle})")
-        robot.move_to_joints(SCAN_POSITION_1["joints"], SCAN_POSITION_1["name"])
-        
-        if _scan_stop_event.wait(timeout=SCAN_LOOP_DELAY):
-            break
-    
-    print(f"  [SCAN] ■ Scan stopped after {cycle} cycles")
-    _scan_active = False
-    _scan_current_pos = None
-    robot.current_preset = None
-
-
-def start_scan():
-    """Start the continuous scan loop in a background thread."""
-    global _scan_thread, _scan_active
-    
-    if _scan_active:
-        print("  [SCAN] Already scanning")
-        return
-    
-    _scan_stop_event.clear()
-    _scan_thread = threading.Thread(target=_scan_loop_worker, daemon=True)
-    _scan_thread.start()
-
-
-def stop_scan():
-    """Stop the continuous scan loop."""
-    global _scan_active
-    
-    if not _scan_active:
-        return
-    
-    print("  [SCAN] ■ Stop requested")
-    _scan_stop_event.set()
-    # The worker thread will clean up _scan_active and _scan_current_pos
-
-
-# ═══════════════════════════════════════════════════════════════════
 #  ROBOT BRIDGE
 # ═══════════════════════════════════════════════════════════════════
 
 def process_robot(gesture_id):
-    global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter
+    global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter, _waiting_for_capture
 
     robot_ok = robot is not None and robot.connected and robot.enabled
+
+    # Block all gestures until the camera has confirmed the shot (or failed)
+    if _waiting_for_capture:
+        return robot.current_preset if robot_ok else None
 
     if _cooldown_counter > 0:
         _cooldown_counter -= 1
@@ -1528,31 +1424,8 @@ def process_robot(gesture_id):
     if _debounce_counter >= DEBOUNCE_FRAMES:
         action = GESTURE_TO_PRESET.get(gesture_id)
 
-        # ── Start continuous scan (Fist) ────────────────────────
-        if action == "scan":
-            if robot_ok and not _scan_active:
-                start_scan()
-                print(f"  [GESTURE] Fist → START CONTINUOUS SCAN")
-            _debounce_counter = 0
-            _cooldown_counter = COOLDOWN_FRAMES * 3
-            return "scan"
-
-        # ── Stop continuous scan (Open Palm) ────────────────────
-        elif action == "stop_scan":
-            if _scan_active:
-                stop_scan()
-                print(f"  [GESTURE] All Fingers → STOP SCAN")
-            _debounce_counter = 0
-            _cooldown_counter = COOLDOWN_FRAMES * 2
-            return None
-
         # ── Robot movement + auto countdown + capture ───────────
-        elif action and isinstance(action, int):
-            if _scan_active:
-                stop_scan()
-                time.sleep(0.2)
-
-            # Move robot (if connected)
+        if action and isinstance(action, int):
             if robot_ok:
                 robot.move_to_preset(action)
                 print(f"  [GESTURE] Gesture {gesture_id} → Robot Preset {action}")
@@ -1560,7 +1433,17 @@ def process_robot(gesture_id):
                 print(f"  [GESTURE] Gesture {gesture_id} → Preset {action} (robot offline — camera only)")
 
             # ── Always start countdown + auto capture ──────────
-            abort_countdown()
+            # Cancel any existing countdown first, then immediately mark the
+            # new one as active — all under the lock — so draw_overlay never
+            # sees a gap where active=False between abort and thread start.
+            _waiting_for_capture = True
+            with _countdown_lock:
+                _countdown_state.update({
+                    "active": True,
+                    "phase": "settling",
+                    "number": None,
+                    "preset": action,
+                })
             threading.Thread(
                 target=countdown_and_capture,
                 args=(action,),
@@ -1669,16 +1552,6 @@ def draw_overlay(frame):
             # Camera icon text
             cv2.putText(out, "PHOTO CAPTURED", (FRAME_WIDTH//2-130, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
-        
-        # Scan loop indicator
-        elif _scan_active:
-            pos_label = "POS 1" if _scan_current_pos == "pos1" else "POS 2"
-            pt = f"SCANNING: {pos_label}"
-            pc = (0, 200, 255)  # Orange for scanning
-            # Pulsing scan indicator
-            pulse = int(127 + 128 * np.sin(time.time() * 4))
-            cv2.putText(out, "SCANNING", (FRAME_WIDTH//2-80, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, pulse, 255), 2)
         
         cv2.putText(out,pt,(FRAME_WIDTH-220,30),cv2.FONT_HERSHEY_SIMPLEX,0.7,pc,2)
         cv2.putText(out,f"[{det.get('method','')}]",(10,FRAME_HEIGHT-15),cv2.FONT_HERSHEY_SIMPLEX,0.45,(180,180,180),1)
@@ -1923,7 +1796,6 @@ function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   const n=document.getElementById('gestureNum'),m=document.getElementById('gestureName'),j=document.getElementById('gestureJog');
   if(d.hand_detected){n.textContent=d.gesture_id;n.style.color='#58a6ff';m.textContent=d.gesture_name;
     if(d.robot_preset==='camera'){j.textContent='SNAP!';j.style.color='#d29922'}
-    else if(d.robot_preset==='scan'){j.textContent='SCANNING';j.style.color='#ff6b35'}
     else{j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}}
   else{n.textContent='—';n.style.color='#484f58';m.textContent=d.gesture_name||'No hand';j.textContent='—';j.style.color='#484f58'}
   if(d.method==='paused'&&isTracking)updateUI(false);
@@ -1931,14 +1803,14 @@ function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
   if(d.robot){const r=d.robot;
     document.getElementById('robotConn').innerHTML=r.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Disconnected';
     document.getElementById('robotEnabled').innerHTML=r.enabled?'<span class="dot green"></span>Yes':'<span class="dot yellow"></span>No';
-    document.getElementById('robotJog').textContent=r.current_preset==='scan'?'SCANNING':r.current_preset?(r.presets&&r.presets[r.current_preset]?'→ '+r.presets[r.current_preset]:'→ Preset '+r.current_preset):'None';
+    document.getElementById('robotJog').textContent=r.current_preset?(r.presets&&r.presets[r.current_preset]?'→ '+r.presets[r.current_preset]:'→ Preset '+r.current_preset):'None';
     document.getElementById('robotIp').textContent=r.ip||'—'}}).catch(()=>{})}
 function loadMap(){fetch('/config/gesture_map').then(r=>r.json()).then(m=>{
   const names={1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
-  const presets={1:'-',2:'-',3:'-',4:'-',5:'STOP',6:'-',7:'AUTO',8:'-',9:'-',10:'SCAN'};
+  const presets={1:'-',2:'-',3:'-',4:'-',5:'-',6:'-',7:'AUTO',8:'-',9:'-',10:'-'};
   // Merge in names from the live API response
   if(m.presets){for(const[k,v] of Object.entries(m.presets)){const s=m.gesture_to_preset[k];if(s&&!isNaN(s))presets[parseInt(k)]=v;}}
-  const specials={'AUTO':'color:#8b949e;font-style:italic','SCAN':'color:#ff6b35;font-weight:700','STOP':'color:#f85149;font-weight:700'};
+  const specials={'AUTO':'color:#8b949e;font-style:italic'};
   const g=document.getElementById('gestureMap');g.innerHTML='';
   for(let i=1;i<=10;i++){const act=presets[i]||'-';const style=specials[act]||'';
     g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog" style="'+style+'">'+act+'</div>'}})}
@@ -1998,8 +1870,6 @@ def api_status():
 def api_detection():
     with detection_lock: d = latest_detection.copy()
     d["tracking"] = tracking_active
-    d["scan_active"] = _scan_active
-    d["scan_position"] = _scan_current_pos
     if robot: d["robot"] = robot.get_status()
     return jsonify(d)
 
@@ -2027,7 +1897,6 @@ def api_stream():
 
 @flask_app.route("/robot/stop", methods=["POST"])
 def api_stop():
-    if _scan_active: stop_scan()
     if robot and robot.connected: robot.stop(); return jsonify({"status":"stopped"})
     return jsonify({"error":"not connected"}),503
 
@@ -2258,7 +2127,6 @@ def main():
         print("\n  [!] Ctrl+C detected")
     finally:
         is_running = False; time.sleep(0.3)
-        if _scan_active: stop_scan()
         if robot and not dry_run: robot.disconnect()
         if camera: camera.release()
         if hands_detector: hands_detector.close()
