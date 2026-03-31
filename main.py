@@ -42,12 +42,12 @@ CANON_CONFIG = {
 app = Flask(__name__, template_folder='templates')
 CORS(app)
 
-detector: GestureDetector = None
-robot: DobotController = None
-canon: CanonCamera = None
+detector: GestureDetector | None = None
+robot: DobotController | None = None
+canon: CanonCamera | None = None
 presets: list = []
-reset_preset: dict = None
-reset_index: int = None
+reset_preset: dict | None = None
+reset_index: int | None = None
 tracking_active = True
 
 # State machine
@@ -59,6 +59,7 @@ class AppState:
 current_state = AppState.IDLE
 state_info = {}
 state_lock = threading.Lock()
+shutdown_event = threading.Event()
 
 # ── Web Routes ───────────────────────────────────────────────────────
 
@@ -140,6 +141,7 @@ def main_logic():
     robot.set_reset_position(reset_index, reset_preset['name'])
     
     canon = CanonCamera(CANON_CONFIG)
+    canon.detect()
     
     print(f"\n[MAIN] Initializing: Moving to reset position ({reset_preset['name']})...")
     robot.move_to_preset(reset_preset['joint_str'], reset_preset['name'], reset_index)
@@ -151,7 +153,7 @@ def main_logic():
 
     last_sent_gesture = None
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             if not tracking_active or current_state != AppState.IDLE:
                 time.sleep(0.1)
@@ -161,14 +163,6 @@ def main_logic():
             if gesture is None or gesture == last_sent_gesture:
                 time.sleep(0.1)
                 continue
-
-            # Handle camera capture gesture
-            if canon.enabled and gesture == str(canon.capture_gesture):
-                if canon.is_ready_for_capture():
-                    canon.capture_photo()
-                    last_sent_gesture = gesture
-                continue
-
             if gesture not in GESTURE_TO_PRESET:
                 continue
 
@@ -208,9 +202,9 @@ def main_logic():
                 while time.time() - countdown_start_time < COUNTDOWN_SECONDS:
                     time.sleep(0.1)
 
-                if canon.enabled and canon.is_ready_for_capture():
+                if canon.connected:
                     print("[MAIN] Countdown finished. Triggering camera.")
-                    canon.capture_photo()
+                    canon.capture()
                 
                 last_sent_gesture = gesture
                 print(f"[MAIN] ✓ Photo taken. Returning to idle state.\n")
@@ -236,6 +230,22 @@ def main_logic():
     print("[MAIN] ✓ Main logic stopped.")
 
 if __name__ == "__main__":
-    logic_thread = threading.Thread(target=main_logic, daemon=True)
+    logic_thread = threading.Thread(target=main_logic, daemon=False)
     logic_thread.start()
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
+    try:
+        app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
+    except KeyboardInterrupt:
+        print("\n[MAIN] Ctrl+C detected. Initiating graceful shutdown...")
+    finally:
+        print("\n[MAIN] Flask server shutting down. Cleaning up resources...")
+        shutdown_event.set()  # Signal the main logic thread to stop
+        if robot and reset_preset and robot.client is not None:
+            print("[MAIN] Returning robot to InitialPose before shutdown...")
+            robot.move_to_preset(reset_preset['joint_str'], reset_preset['name'], reset_index)
+            robot.wait_until_done(ROBOT_MOVE_TIMEOUT)
+            robot.shutdown()
+        if detector:
+            detector.stop()
+        
+        logic_thread.join()
+        print("[MAIN] ✓ Cleanup complete. Goodbye!")
