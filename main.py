@@ -94,9 +94,13 @@ CANON_ENABLED        = True
 CANON_SAVE_DIR       = r"C:\CapturedPhotos"
 CANON_CAPTURE_GESTURE = 7
 
-DEBOUNCE_FRAMES    = 8
+DEBOUNCE_FRAMES    = 90   # ~3s at 30fps — must hold gesture steadily before it fires
 COOLDOWN_FRAMES    = 15
 NO_HAND_STOP_DELAY = 10
+
+# Safety gate — user must hold gesture 5 (All Fingers) for this long to unlock
+SAFETY_HOLD_SEC = 2.0    # seconds gesture 5 must be held continuously
+SAFETY_TIMEOUT  = 30.0   # seconds after unlock to pick a preset before gate auto-locks
 
 FLASK_PORT = 5001
 
@@ -123,6 +127,11 @@ _debounce_counter      = 0
 _debounce_last_gesture = None
 _cooldown_counter      = 0
 _no_hand_counter       = 0
+
+# Safety gate state
+_safety_unlocked    = False  # True after gesture-5 held for SAFETY_HOLD_SEC
+_safety_gate5_start = 0.0   # time.time() when current gesture-5 hold began
+_safety_unlocked_at = 0.0   # time.time() when gate was last unlocked
 
 # Countdown state
 _countdown_state = {
@@ -215,6 +224,7 @@ def keyboard_listener():
 
 def process_robot(gesture_id):
     global _debounce_counter, _debounce_last_gesture, _cooldown_counter, _no_hand_counter
+    global _safety_unlocked, _safety_gate5_start, _safety_unlocked_at
 
     robot_ok = robot is not None and robot.connected and robot.enabled
 
@@ -226,9 +236,34 @@ def process_robot(gesture_id):
         _debounce_counter = 0
         _debounce_last_gesture = None
         _no_hand_counter += 1
+        _safety_gate5_start = 0.0   # reset hold timer when hand leaves frame
         return None
 
     _no_hand_counter = 0
+
+    # ── Safety gate ─────────────────────────────────────────────────
+    # Track continuous gesture-5 hold (independent of debounce)
+    if gesture_id == 5:
+        if _safety_gate5_start == 0.0:
+            _safety_gate5_start = time.time()
+        held = time.time() - _safety_gate5_start
+        if not _safety_unlocked and held >= SAFETY_HOLD_SEC:
+            _safety_unlocked    = True
+            _safety_unlocked_at = time.time()
+            print("  [SAFETY] ✓ Gate UNLOCKED — show your target gesture now")
+    else:
+        _safety_gate5_start = 0.0   # switched away from gesture-5, reset timer
+
+    # Auto-lock if unlocked but no action taken within timeout
+    if _safety_unlocked and (time.time() - _safety_unlocked_at) > SAFETY_TIMEOUT:
+        _safety_unlocked    = False
+        _safety_gate5_start = 0.0
+        print("  [SAFETY] Gate auto-locked (timeout)")
+
+    # Gate still locked → block all robot actions
+    if not _safety_unlocked:
+        return None
+    # ── End safety gate ─────────────────────────────────────────────
 
     if gesture_id == _debounce_last_gesture:
         _debounce_counter += 1
@@ -246,6 +281,9 @@ def process_robot(gesture_id):
                 print(f"  [GESTURE] Fist → START CONTINUOUS SCAN")
             _debounce_counter = 0
             _cooldown_counter = COOLDOWN_FRAMES * 3
+            _safety_unlocked    = False          # lock gate after action
+            _safety_gate5_start = 0.0
+            print("  [SAFETY] Gate locked after action")
             return "scan"
 
         # ── Stop continuous scan (Open Palm) ────────────────────
@@ -255,6 +293,9 @@ def process_robot(gesture_id):
                 print(f"  [GESTURE] All Fingers → STOP SCAN")
             _debounce_counter = 0
             _cooldown_counter = COOLDOWN_FRAMES * 2
+            _safety_unlocked    = False          # lock gate after action
+            _safety_gate5_start = 0.0
+            print("  [SAFETY] Gate locked after action")
             return None
 
         # ── Robot movement + auto countdown + capture ───────────
@@ -281,6 +322,9 @@ def process_robot(gesture_id):
 
             _debounce_counter = 0
             _cooldown_counter = COUNTDOWN_COOLDOWN_FRAMES
+            _safety_unlocked    = False          # lock gate after action
+            _safety_gate5_start = 0.0
+            print("  [SAFETY] Gate locked after action")
             return action
 
         _debounce_counter = 0
@@ -298,175 +342,580 @@ CORS(flask_app)
 
 @flask_app.route("/", methods=["GET"])
 def dashboard():
-    html = """<!DOCTYPE html>
+    html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Finger Gesture → Dobot Nova 5</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Nova 5 — Gesture Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
 <style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,sans-serif}
-  .header{background:#161b22;border-bottom:1px solid #30363d;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
-  .header h1{font-size:18px;font-weight:600} .header h1 span{color:#58a6ff}
-  .header .subtitle{color:#8b949e;font-size:13px}
-  .main{display:flex;gap:20px;padding:20px 24px;max-width:1200px;margin:0 auto}
-  .video-panel{flex:1;min-width:0}
-  .video-panel img{width:100%;border-radius:12px;border:2px solid #30363d;display:block;background:#000}
-  .side-panel{width:320px;flex-shrink:0;display:flex;flex-direction:column;gap:14px}
-  .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px}
-  .card h3{font-size:14px;color:#8b949e;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px}
-  .status-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px}
-  .status-row .label{color:#8b949e} .status-row .value{font-weight:600}
-  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
-  .dot.green{background:#3fb950;box-shadow:0 0 6px #3fb950}
-  .dot.red{background:#f85149;box-shadow:0 0 6px #f85149}
-  .dot.yellow{background:#d29922;box-shadow:0 0 6px #d29922}
-  .btn{width:100%;padding:12px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:8px}
-  .btn:active{transform:scale(0.97)}
-  .btn-stop{background:#da3633;color:#fff} .btn-stop:hover{background:#f85149}
-  .btn-start{background:#238636;color:#fff} .btn-start:hover{background:#3fb950}
-  .btn-outline{background:transparent;color:#58a6ff;border:1px solid #58a6ff} .btn-outline:hover{background:#58a6ff22}
-  .btn-danger{background:transparent;color:#f85149;border:1px solid #f85149} .btn-danger:hover{background:#f8514922}
-  .btn-group{display:flex;gap:8px} .btn-group .btn{flex:1}
-  .gesture-grid{display:grid;grid-template-columns:40px 1fr 50px;gap:4px 10px;font-size:13px;align-items:center}
-  .gesture-grid .gid{color:#58a6ff;font-weight:700;text-align:center}
-  .gesture-grid .gname{color:#c9d1d9} .gesture-grid .gjog{color:#3fb950;font-family:monospace;font-weight:600;text-align:center}
-  .big-gesture{text-align:center;padding:8px 0}
-  .big-gesture .number{font-size:48px;font-weight:800;line-height:1}
-  .big-gesture .name{font-size:16px;color:#8b949e;margin-top:4px}
-  .big-gesture .jog{font-size:20px;font-weight:700;margin-top:2px}
-  .hotkey{display:inline-block;background:#21262d;border:1px solid #30363d;border-radius:6px;padding:2px 8px;font-family:monospace;font-size:12px;color:#c9d1d9;margin:0 2px}
-  @media(max-width:768px){.main{flex-direction:column}.side-panel{width:100%}}
+:root {
+  --bg:       #07090b;
+  --surface:  #0e1215;
+  --border:   #1a2028;
+  --border2:  #253040;
+  --green:    #00e676;
+  --green-dim:#00e67630;
+  --amber:    #ffab00;
+  --red:      #ff3d3d;
+  --blue:     #40c4ff;
+  --muted:    #4a5568;
+  --text:     #d0dce8;
+  --mono: 'JetBrains Mono', monospace;
+  --display: 'Syne', sans-serif;
+}
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Subtle scanline texture */
+body::before {
+  content:'';
+  position:fixed; inset:0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,230,118,0.012) 2px, rgba(0,230,118,0.012) 4px);
+  pointer-events:none;
+  z-index:0;
+}
+
+/* ── Header ─────────────────────────────────────── */
+.hdr {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 14px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position:sticky; top:0; z-index:100;
+  backdrop-filter: blur(8px);
+}
+.hdr-left { display:flex; flex-direction:column; gap:2px; }
+.hdr h1 {
+  font-family: var(--display);
+  font-size: clamp(15px, 2.5vw, 20px);
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+.hdr h1 em { color: var(--green); font-style:normal; }
+.hdr-sub { font-size:10px; color: var(--muted); letter-spacing:1px; text-transform:uppercase; }
+.hdr-right { display:flex; align-items:center; gap:16px; }
+.badge {
+  display:flex; align-items:center; gap:7px;
+  font-size:11px; font-weight:600; letter-spacing:1px;
+  text-transform:uppercase;
+}
+.pulse {
+  width:9px; height:9px; border-radius:50%;
+  background: var(--green);
+  box-shadow: 0 0 0 0 var(--green);
+  animation: pulse 2s infinite;
+}
+.pulse.off { background: var(--red); box-shadow: 0 0 0 0 var(--red); animation: none; }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(0,230,118,0.6); }
+  70%  { box-shadow: 0 0 0 7px rgba(0,230,118,0); }
+  100% { box-shadow: 0 0 0 0 rgba(0,230,118,0); }
+}
+#sysTime { font-size:12px; color: var(--muted); font-family: var(--mono); }
+
+/* ── Layout ─────────────────────────────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  grid-template-rows: auto;
+  gap: 12px;
+  padding: 12px;
+  max-width: 1400px;
+  margin: 0 auto;
+  position: relative; z-index:1;
+}
+
+/* ── Video ──────────────────────────────────────── */
+.video-wrap {
+  grid-column:1; grid-row: 1 / 3;
+  display:flex; flex-direction:column; gap:10px;
+}
+.video-box {
+  position:relative;
+  background: #000;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  overflow: hidden;
+  aspect-ratio: 4/3;
+}
+.video-box img {
+  width:100%; height:100%;
+  object-fit:cover;
+  display:block;
+}
+.video-box .vid-overlay {
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  background: rgba(0,0,0,0.7);
+  flex-direction:column; gap:8px;
+  font-size:12px; color:var(--muted);
+  transition: opacity 0.3s;
+}
+.video-box .vid-overlay.hidden { opacity:0; pointer-events:none; }
+.vid-corner {
+  position:absolute;
+  width:16px; height:16px;
+  border-color: var(--green);
+  border-style: solid;
+  opacity:0.5;
+}
+.vid-corner.tl { top:8px; left:8px;  border-width:2px 0 0 2px; }
+.vid-corner.tr { top:8px; right:8px; border-width:2px 2px 0 0; }
+.vid-corner.bl { bottom:8px; left:8px;  border-width:0 0 2px 2px; }
+.vid-corner.br { bottom:8px; right:8px; border-width:0 2px 2px 0; }
+.vid-badge {
+  position:absolute; top:10px; left:50%; transform:translateX(-50%);
+  background: rgba(0,230,118,0.12);
+  border: 1px solid var(--green);
+  color: var(--green);
+  font-size:10px; font-weight:600; letter-spacing:1.5px;
+  padding: 3px 10px; border-radius:2px;
+  text-transform:uppercase;
+}
+
+/* Gesture bar under video */
+.gesture-bar {
+  display:grid; grid-template-columns:1fr 1fr 1fr;
+  gap:8px;
+}
+.g-cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius:6px;
+  padding: 12px 14px;
+  display:flex; flex-direction:column; gap:4px;
+}
+.g-cell .gc-label { font-size:9px; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+.g-cell .gc-val { font-size:22px; font-weight:700; font-family:var(--display); color:#fff; line-height:1; }
+.g-cell .gc-sub { font-size:11px; color:var(--muted); }
+#gNum { color: var(--green); }
+#gPreset { color: var(--amber); }
+
+/* ── Side panels ────────────────────────────────── */
+.side { display:flex; flex-direction:column; gap:10px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius:6px;
+  padding: 14px;
+}
+.card-title {
+  font-size:9px; font-weight:600; letter-spacing:2px;
+  text-transform:uppercase; color:var(--muted);
+  margin-bottom:12px;
+  display:flex; align-items:center; gap:8px;
+}
+.card-title::after {
+  content:'';flex:1;height:1px;background:var(--border);
+}
+
+/* Status rows */
+.srow {
+  display:flex; justify-content:space-between; align-items:center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.srow:last-child { border-bottom:none; }
+.srow .slabel { color:var(--muted); font-size:11px; }
+.srow .sval { font-size:12px; font-weight:600; display:flex; align-items:center; gap:5px; }
+.dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.dot.g { background:var(--green); box-shadow:0 0 5px var(--green); }
+.dot.r { background:var(--red);   box-shadow:0 0 5px var(--red); }
+.dot.y { background:var(--amber); box-shadow:0 0 5px var(--amber); }
+
+/* Buttons */
+.btn {
+  width:100%; padding:10px 14px;
+  border:none; border-radius:4px;
+  font-family:var(--mono); font-size:11px; font-weight:600;
+  letter-spacing:0.5px; text-transform:uppercase;
+  cursor:pointer; transition:all 0.15s;
+  display:flex; align-items:center; justify-content:center; gap:6px;
+}
+.btn:active { transform:scale(0.97); }
+.btn-red   { background:#3d0a0a; color:var(--red);   border:1px solid var(--red); }
+.btn-red:hover   { background:var(--red); color:#fff; }
+.btn-green { background:#003d1a; color:var(--green); border:1px solid var(--green); }
+.btn-green:hover { background:var(--green); color:#000; }
+.btn-blue  { background:#0a1e2e; color:var(--blue);  border:1px solid var(--blue); }
+.btn-blue:hover  { background:var(--blue); color:#000; }
+.btn-amber { background:#2e1a00; color:var(--amber); border:1px solid var(--amber); }
+.btn-amber:hover { background:var(--amber); color:#000; }
+.btn-ghost { background:transparent; color:var(--muted); border:1px solid var(--border2); }
+.btn-ghost:hover { border-color:var(--text); color:var(--text); }
+
+.btn-row { display:flex; gap:8px; }
+.btn-row .btn { flex:1; }
+
+/* Gesture map table */
+.gmap { width:100%; border-collapse:collapse; }
+.gmap tr { border-bottom:1px solid var(--border); }
+.gmap tr:last-child { border-bottom:none; }
+.gmap td { padding:5px 4px; font-size:11px; }
+.gmap .gm-id { color:var(--blue); font-weight:700; width:24px; }
+.gmap .gm-name { color:var(--text); }
+.gmap .gm-action { text-align:right; font-weight:600; }
+.gmap .gm-action.active  { color:var(--green); }
+.gmap .gm-action.scan    { color:var(--amber); }
+.gmap .gm-action.stop    { color:var(--red); }
+.gmap .gm-action.dim     { color:var(--muted); }
+
+/* Hotkeys */
+.hkeys { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.hk {
+  background:#111820; border:1px solid var(--border2);
+  border-radius:3px; padding:3px 8px;
+  font-size:10px; color:var(--text); font-family:var(--mono);
+}
+.hk span { color:var(--muted); font-size:9px; margin-left:4px; }
+
+/* Scan status bar */
+.scan-bar {
+  display:none;
+  background: #1a1200;
+  border:1px solid var(--amber);
+  border-radius:4px;
+  padding:8px 12px;
+  font-size:11px; color:var(--amber);
+  align-items:center; gap:8px;
+}
+.scan-bar.active { display:flex; }
+.scan-dot { width:6px; height:6px; border-radius:50%; background:var(--amber); animation:pulse-amber 1s infinite; }
+@keyframes pulse-amber {
+  0%,100% { opacity:1; } 50% { opacity:0.3; }
+}
+
+/* ── Responsive ─────────────────────────────────── */
+@media (max-width:900px) {
+  .layout { grid-template-columns:1fr; }
+  .video-wrap { grid-column:1; grid-row:1; }
+  .side { grid-column:1; }
+  .gesture-bar { grid-template-columns:1fr 1fr 1fr; }
+}
+@media (max-width:480px) {
+  .hdr { padding:10px 14px; }
+  .layout { padding:8px; gap:8px; }
+  .gesture-bar { grid-template-columns:1fr 1fr; }
+  .g-cell:last-child { display:none; }
+  .btn-row { flex-direction:column; }
+}
 </style>
 </head>
 <body>
-<div class="header">
-  <div>
-    <h1>Finger Gesture → <span>Dobot Nova 5</span></h1>
-    <div class="subtitle">YOLOv8 + MediaPipe │ TCP/IP Robot Control</div>
+
+<!-- Header -->
+<header class="hdr">
+  <div class="hdr-left">
+    <h1>Nova 5 &mdash; <em>Gesture</em> Control</h1>
+    <div class="hdr-sub">MediaPipe · TCP/IP · digiCamControl</div>
   </div>
-  <div id="trackingBadge" style="font-size:14px;font-weight:600"><span class="dot green"></span> TRACKING</div>
-</div>
-<div class="main">
-  <div class="video-panel"><img id="stream" src="/stream" alt="Live Stream" /></div>
-  <div class="side-panel">
-    <div class="card">
-      <h3>Current Gesture</h3>
-      <div class="big-gesture">
-        <div class="number" id="gestureNum">—</div>
-        <div class="name" id="gestureName">Waiting...</div>
-        <div class="jog" id="gestureJog" style="color:#3fb950">—</div>
+  <div class="hdr-right">
+    <span id="sysTime"></span>
+    <div class="badge" id="trackBadge"><div class="pulse" id="pulseDot"></div><span id="trackLabel">LIVE</span></div>
+  </div>
+</header>
+
+<!-- Main layout -->
+<div class="layout">
+
+  <!-- Left: Video + gesture bar -->
+  <div class="video-wrap">
+    <div class="video-box">
+      <img id="streamImg" src="/stream" alt="feed" onload="streamOk()" onerror="streamErr()">
+      <div class="vid-corner tl"></div>
+      <div class="vid-corner tr"></div>
+      <div class="vid-corner bl"></div>
+      <div class="vid-corner br"></div>
+      <div class="vid-badge" id="streamStatus">LIVE</div>
+      <div class="vid-overlay hidden" id="vidOverlay">
+        <svg width="32" height="32" fill="none" stroke="#4a5568" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 3l-4 4-4-4"/></svg>
+        <span>Reconnecting feed…</span>
       </div>
     </div>
-    <div class="card">
-      <h3>Tracking Control</h3>
-      <button class="btn btn-stop" id="btnTracking" onclick="toggleTracking()">■ Stop Tracking</button>
-      <div style="height:8px"></div>
-      <button class="btn btn-outline" onclick="emergencyStop()">Emergency Stop Robot</button>
-      <div style="margin-top:12px;font-size:12px;color:#8b949e;line-height:1.6">
-        Keyboard: <span class="hotkey">SPACE</span> Toggle tracking
-        <span class="hotkey">S</span> Emergency stop
-        <span class="hotkey">ESC</span> Exit
+
+    <div class="scan-bar" id="scanBar">
+      <div class="scan-dot"></div>
+      SCANNING — <span id="scanPos">Position 1</span>
+    </div>
+
+    <div class="gesture-bar">
+      <div class="g-cell">
+        <div class="gc-label">Gesture ID</div>
+        <div class="gc-val" id="gNum">—</div>
+        <div class="gc-sub" id="gName">No hand</div>
       </div>
-    </div>
-    <div class="card">
-      <h3>Robot Status</h3>
-      <div class="status-row"><span class="label">Connection</span><span class="value" id="robotConn">—</span></div>
-      <div class="status-row"><span class="label">Enabled</span><span class="value" id="robotEnabled">—</span></div>
-      <div class="status-row"><span class="label">Current Preset</span><span class="value" id="robotJog">—</span></div>
-      <div class="status-row"><span class="label">IP</span><span class="value" id="robotIp">—</span></div>
-      <div style="height:8px"></div>
-      <div class="btn-group">
-        <button class="btn btn-start" onclick="enableRobot()" style="font-size:12px;padding:8px">Enable</button>
-        <button class="btn btn-danger" onclick="disableRobot()" style="font-size:12px;padding:8px">Disable</button>
+      <div class="g-cell">
+        <div class="gc-label">Confidence</div>
+        <div class="gc-val" id="gConf" style="color:var(--blue)">—</div>
+        <div class="gc-sub" id="gMethod">—</div>
       </div>
-    </div>
-    <div class="card">
-      <h3>Gesture → Preset Map</h3>
-      <div class="gesture-grid" id="gestureMap"></div>
-    </div>
-    <div class="card" id="cameraCard">
-      <h3>Canon EOS 6D</h3>
-      <div class="status-row"><span class="label">Connection</span><span class="value" id="canonConn">—</span></div>
-      <div class="status-row"><span class="label">Photos Taken</span><span class="value" id="canonCount">0</span></div>
-      <div class="status-row"><span class="label">Last Photo</span><span class="value" id="canonLast" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">—</span></div>
-      <div class="status-row" id="canonErrRow" style="display:none"><span class="label" style="color:#f85149">Error</span><span class="value" id="canonErr" style="color:#f85149;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">—</span></div>
-      <div style="height:8px"></div>
-      <button class="btn btn-outline" onclick="manualCapture()" style="border-color:#d29922;color:#d29922">📷 Manual Capture</button>
-      <div style="height:6px"></div>
-      <button class="btn btn-outline" id="btnReconnect" onclick="reconnectCamera()" style="border-color:#58a6ff;color:#58a6ff;font-size:12px;padding:8px">↺ Reconnect Camera</button>
-      <div style="height:8px"></div>
-      <img id="lastPhoto" style="width:100%;border-radius:8px;display:none;border:1px solid #30363d" />
+      <div class="g-cell">
+        <div class="gc-label">Robot Action</div>
+        <div class="gc-val" id="gPreset">—</div>
+        <div class="gc-sub" id="gPresetName">—</div>
+      </div>
     </div>
   </div>
-</div>
+
+  <!-- Right: Control panels -->
+  <div class="side">
+
+    <!-- Tracking control -->
+    <div class="card">
+      <div class="card-title">Tracking Control</div>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button class="btn btn-red" id="btnTrack" onclick="toggleTracking()">■ Stop</button>
+        <button class="btn btn-ghost" onclick="emergencyStop()">⚡ E-Stop</button>
+      </div>
+      <div class="hkeys">
+        <div class="hk">SPACE<span>toggle</span></div>
+        <div class="hk">S<span>e-stop</span></div>
+        <div class="hk">ESC<span>exit</span></div>
+      </div>
+    </div>
+
+    <!-- Robot status -->
+    <div class="card">
+      <div class="card-title">Robot Status</div>
+      <div class="srow"><span class="slabel">Connection</span><span class="sval" id="rConn"><span class="dot r"></span>—</span></div>
+      <div class="srow"><span class="slabel">Enabled</span><span class="sval" id="rEnabled">—</span></div>
+      <div class="srow"><span class="slabel">Current Preset</span><span class="sval" id="rPreset" style="color:var(--green)">—</span></div>
+      <div class="srow"><span class="slabel">Robot IP</span><span class="sval" id="rIp" style="color:var(--muted)">—</span></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-green" onclick="enableRobot()" style="font-size:10px">Enable</button>
+        <button class="btn btn-red"   onclick="disableRobot()" style="font-size:10px">Disable</button>
+      </div>
+    </div>
+
+    <!-- Canon camera -->
+    <div class="card">
+      <div class="card-title">Canon EOS 6D</div>
+      <div class="srow"><span class="slabel">Connection</span><span class="sval" id="cConn"><span class="dot r"></span>Offline</span></div>
+      <div class="srow"><span class="slabel">Method</span><span class="sval" id="cMethod" style="color:var(--muted)">—</span></div>
+      <div class="srow"><span class="slabel">Photos Taken</span><span class="sval" id="cCount" style="color:var(--green)">0</span></div>
+      <div class="srow" id="cErrRow" style="display:none"><span class="slabel" style="color:var(--red)">Error</span><span class="sval" id="cErr" style="color:var(--red);font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;display:block">—</span></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-amber" onclick="manualCapture()" style="font-size:10px">📷 Capture</button>
+        <button class="btn btn-blue" id="btnReconn" onclick="reconnectCamera()" style="font-size:10px">↺ Reconnect</button>
+      </div>
+    </div>
+
+    <!-- Gesture map -->
+    <div class="card">
+      <div class="card-title">Gesture Map</div>
+      <table class="gmap" id="gmapTable"></table>
+    </div>
+
+  </div><!-- /side -->
+</div><!-- /layout -->
+
 <script>
-let isTracking=true;
-function toggleTracking(){
-  fetch(isTracking?'/tracking/stop':'/tracking/start',{method:'POST'}).then(r=>r.json()).then(()=>updateUI(!isTracking));
+// ── State ────────────────────────────────────────
+let isTracking = true;
+let streamRetries = 0;
+let streamTimer = null;
+
+// ── Clock ────────────────────────────────────────
+function tick() {
+  const n = new Date();
+  document.getElementById('sysTime').textContent =
+    n.toTimeString().slice(0,8);
 }
-function updateUI(a){isTracking=a;const b=document.getElementById('btnTracking'),g=document.getElementById('trackingBadge');
-  if(a){b.className='btn btn-stop';b.innerHTML='■ Stop Tracking';g.innerHTML='<span class="dot green"></span> TRACKING'}
-  else{b.className='btn btn-start';b.innerHTML='► Start Tracking';g.innerHTML='<span class="dot red"></span> PAUSED'}}
-function emergencyStop(){fetch('/robot/stop',{method:'POST'});fetch('/tracking/stop',{method:'POST'}).then(()=>updateUI(false))}
-function enableRobot(){fetch('/robot/enable',{method:'POST'})}
-function disableRobot(){fetch('/robot/disable',{method:'POST'})}
-function manualCapture(){
-  fetch('/camera/capture',{method:'POST'}).then(r=>r.json()).then(d=>{
-    if(d.status==='captured'){document.getElementById('canonCount').textContent=d.count;refreshLastPhoto()}
-    else{alert('Capture failed: '+(d.error||'unknown'))}
-  }).catch(()=>alert('Camera not available'))
+tick(); setInterval(tick, 1000);
+
+// ── Stream watchdog ───────────────────────────────
+function streamOk() {
+  streamRetries = 0;
+  document.getElementById('vidOverlay').classList.add('hidden');
+  document.getElementById('streamStatus').textContent = 'LIVE';
+  document.getElementById('streamStatus').style.color = 'var(--green)';
+  document.getElementById('streamStatus').style.borderColor = 'var(--green)';
+  if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
 }
-function refreshLastPhoto(){
-  fetch('/camera/last').then(r=>r.json()).then(d=>{
-    if(d.frame){const img=document.getElementById('lastPhoto');img.src='data:image/jpeg;base64,'+d.frame;img.style.display='block';
-    document.getElementById('canonLast').textContent=d.path.split(/[\\\/]/).pop()}
-  }).catch(()=>{})
+function streamErr() {
+  document.getElementById('vidOverlay').classList.remove('hidden');
+  document.getElementById('streamStatus').textContent = 'NO FEED';
+  document.getElementById('streamStatus').style.color = 'var(--red)';
+  document.getElementById('streamStatus').style.borderColor = 'var(--red)';
+  // Retry with cache-bust
+  streamRetries++;
+  const delay = Math.min(1000 * streamRetries, 5000);
+  streamTimer = setTimeout(() => {
+    const img = document.getElementById('streamImg');
+    img.src = '/stream?' + Date.now();
+  }, delay);
 }
-function poll(){fetch('/detection').then(r=>r.json()).then(d=>{
-  const n=document.getElementById('gestureNum'),m=document.getElementById('gestureName'),j=document.getElementById('gestureJog');
-  if(d.hand_detected){n.textContent=d.gesture_id;n.style.color='#58a6ff';m.textContent=d.gesture_name;
-    if(d.robot_preset==='camera'){j.textContent='SNAP!';j.style.color='#d29922'}
-    else if(d.robot_preset==='scan'){j.textContent='SCANNING';j.style.color='#ff6b35'}
-    else{j.textContent=d.robot_preset?'PRESET: '+d.robot_preset:'READY';j.style.color=d.robot_preset?'#3fb950':'#f85149'}}
-  else{n.textContent='—';n.style.color='#484f58';m.textContent=d.gesture_name||'No hand';j.textContent='—';j.style.color='#484f58'}
-  if(d.method==='paused'&&isTracking)updateUI(false);
-  if(d.method!=='paused'&&!isTracking)updateUI(true);
-  if(d.robot){const r=d.robot;
-    document.getElementById('robotConn').innerHTML=r.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Disconnected';
-    document.getElementById('robotEnabled').innerHTML=r.enabled?'<span class="dot green"></span>Yes':'<span class="dot yellow"></span>No';
-    document.getElementById('robotJog').textContent=r.current_preset==='scan'?'SCANNING':r.current_preset?(r.presets&&r.presets[r.current_preset]?'→ '+r.presets[r.current_preset]:'→ Preset '+r.current_preset):'None';
-    document.getElementById('robotIp').textContent=r.ip||'—'}}).catch(()=>{})}
-function loadMap(){fetch('/config/gesture_map').then(r=>r.json()).then(m=>{
-  const names={1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
-  const presets={1:'-',2:'-',3:'-',4:'-',5:'STOP',6:'-',7:'AUTO',8:'-',9:'-',10:'SCAN'};
-  if(m.presets){for(const[k,v] of Object.entries(m.presets)){const s=m.gesture_to_preset[k];if(s&&!isNaN(s))presets[parseInt(k)]=v;}}
-  const specials={'AUTO':'color:#8b949e;font-style:italic','SCAN':'color:#ff6b35;font-weight:700','STOP':'color:#f85149;font-weight:700'};
-  const g=document.getElementById('gestureMap');g.innerHTML='';
-  for(let i=1;i<=10;i++){const act=presets[i]||'-';const style=specials[act]||'';
-    g.innerHTML+='<div class="gid">'+i+'</div><div class="gname">'+(names[i]||'?')+'</div><div class="gjog" style="'+style+'">'+act+'</div>'}});}
-function reconnectCamera(){
-  const btn=document.getElementById('btnReconnect');
-  btn.textContent='🚀 Launching...';btn.disabled=true;
-  fetch('/camera/reconnect',{method:'POST'}).then(r=>r.json()).then(d=>{
-    btn.disabled=false;
-    if(d.connected){btn.textContent='✓ Connected!';btn.style.borderColor='#3fb950';btn.style.color='#3fb950';
-      setTimeout(()=>{btn.textContent='↺ Reconnect Camera';btn.style.borderColor='#58a6ff';btn.style.color='#58a6ff'},3000)
-    }else{btn.textContent='✗ Failed — retry';btn.style.borderColor='#f85149';btn.style.color='#f85149';
-      setTimeout(()=>{btn.textContent='↺ Reconnect Camera';btn.style.borderColor='#58a6ff';btn.style.color='#58a6ff'},4000)}
-  }).catch(()=>{btn.disabled=false;btn.textContent='↺ Reconnect Camera'})
+
+// ── Tracking ──────────────────────────────────────
+function toggleTracking() {
+  const url = isTracking ? '/tracking/stop' : '/tracking/start';
+  fetch(url, {method:'POST'}).then(r=>r.json()).then(() => setTracking(!isTracking));
 }
-function pollCamera(){fetch('/camera/status').then(r=>r.json()).then(d=>{
-  document.getElementById('canonConn').innerHTML=d.connected?'<span class="dot green"></span>Connected':'<span class="dot red"></span>Offline';
-  document.getElementById('canonCount').textContent=d.capture_count||0;
-  if(d.last_capture){document.getElementById('canonLast').textContent=d.last_capture.split(/[\\\/]/).pop()}
-  const errRow=document.getElementById('canonErrRow');
-  if(d.last_error){document.getElementById('canonErr').textContent=d.last_error;errRow.style.display='flex'}
-  else{errRow.style.display='none'}
-}).catch(()=>{})}
-document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();toggleTracking()}if(e.key==='s'||e.key==='S'){emergencyStop()}});
-setInterval(poll,150);setInterval(pollCamera,2000);loadMap();
+function setTracking(on) {
+  isTracking = on;
+  const btn = document.getElementById('btnTrack');
+  const dot = document.getElementById('pulseDot');
+  const lbl = document.getElementById('trackLabel');
+  if (on) {
+    btn.className = 'btn btn-red';
+    btn.textContent = '■ Stop';
+    dot.className = 'pulse';
+    lbl.textContent = 'LIVE';
+  } else {
+    btn.className = 'btn btn-green';
+    btn.textContent = '► Start';
+    dot.className = 'pulse off';
+    lbl.textContent = 'PAUSED';
+  }
+}
+function emergencyStop() {
+  fetch('/robot/stop', {method:'POST'});
+  fetch('/tracking/stop', {method:'POST'}).then(() => setTracking(false));
+}
+function enableRobot()  { fetch('/robot/enable',  {method:'POST'}); }
+function disableRobot() { fetch('/robot/disable', {method:'POST'}); }
+
+// ── Camera ────────────────────────────────────────
+function manualCapture() {
+  fetch('/camera/capture', {method:'POST'}).then(r=>r.json()).then(d => {
+    if (d.status === 'captured') {
+      document.getElementById('cCount').textContent = d.count;
+      flashElement('cCount');
+    }
+  }).catch(() => {});
+}
+function reconnectCamera() {
+  const btn = document.getElementById('btnReconn');
+  btn.textContent = '… Trying'; btn.disabled = true;
+  fetch('/camera/reconnect', {method:'POST'}).then(r=>r.json()).then(d => {
+    btn.disabled = false;
+    btn.textContent = d.connected ? '✓ Connected' : '↺ Reconnect';
+    setTimeout(() => { btn.textContent = '↺ Reconnect'; }, 3000);
+  }).catch(() => { btn.disabled=false; btn.textContent='↺ Reconnect'; });
+}
+function flashElement(id) {
+  const el = document.getElementById(id);
+  el.style.transition = 'color 0.1s';
+  el.style.color = '#fff';
+  setTimeout(() => { el.style.color = ''; }, 400);
+}
+
+// ── Poll detection ────────────────────────────────
+function poll() {
+  fetch('/detection').then(r=>r.json()).then(d => {
+    const hand = d.hand_detected;
+
+    // Gesture panel
+    document.getElementById('gNum').textContent  = hand ? d.gesture_id : '—';
+    document.getElementById('gNum').style.color  = hand ? 'var(--green)' : 'var(--muted)';
+    document.getElementById('gName').textContent = hand ? d.gesture_name : 'No hand detected';
+    document.getElementById('gConf').textContent = hand ? Math.round((d.confidence||0)*100)+'%' : '—';
+    document.getElementById('gMethod').textContent = d.method || '—';
+
+    // Preset / action
+    const preset = d.robot_preset;
+    let pLabel = '—', pSub = '—', pColor = 'var(--muted)';
+    if (preset === 'scan') { pLabel='SCAN'; pSub='Oscillating'; pColor='var(--amber)'; }
+    else if (preset === 'camera') { pLabel='📷'; pSub='Capturing'; pColor='var(--blue)'; }
+    else if (preset) { pLabel='P'+preset; pSub='Moving'; pColor='var(--green)'; }
+    document.getElementById('gPreset').textContent = pLabel;
+    document.getElementById('gPreset').style.color = pColor;
+    document.getElementById('gPresetName').textContent = pSub;
+
+    // Scan bar
+    const scanBar = document.getElementById('scanBar');
+    if (d.scan_active) {
+      scanBar.classList.add('active');
+      document.getElementById('scanPos').textContent = d.scan_position === 'pos2' ? 'Position 2' : 'Position 1';
+    } else {
+      scanBar.classList.remove('active');
+    }
+
+    // Tracking state sync
+    if (d.method === 'paused' && isTracking) setTracking(false);
+    if (d.method !== 'paused' && !isTracking) setTracking(true);
+
+    // Robot status
+    if (d.robot) {
+      const r = d.robot;
+      document.getElementById('rConn').innerHTML = r.connected
+        ? '<span class="dot g"></span>Connected'
+        : '<span class="dot r"></span>Disconnected';
+      document.getElementById('rEnabled').innerHTML = r.enabled
+        ? '<span class="dot g"></span>Enabled'
+        : '<span class="dot y"></span>Disabled';
+      const pn = r.current_preset;
+      document.getElementById('rPreset').textContent = pn === 'scan' ? 'SCANNING' : pn ? '→ P'+pn : 'Idle';
+      document.getElementById('rIp').textContent = r.ip || '—';
+    }
+  }).catch(() => {});
+}
+
+// ── Poll camera ───────────────────────────────────
+function pollCamera() {
+  fetch('/camera/status').then(r=>r.json()).then(d => {
+    document.getElementById('cConn').innerHTML = d.connected
+      ? '<span class="dot g"></span>Connected'
+      : '<span class="dot r"></span>Offline';
+    document.getElementById('cMethod').textContent = d.capture_method || '—';
+    document.getElementById('cCount').textContent = d.capture_count || 0;
+    const errRow = document.getElementById('cErrRow');
+    if (d.last_error) {
+      document.getElementById('cErr').textContent = d.last_error;
+      errRow.style.display = 'flex';
+    } else {
+      errRow.style.display = 'none';
+    }
+  }).catch(() => {});
+}
+
+// ── Gesture map ───────────────────────────────────
+const GNAMES = {1:'Index',2:'Index+Mid',3:'Idx+Mid+Ring',4:'Idx+Mid+Rng+Pnk',
+  5:'All Fingers',6:'Thumb',7:'Thumb+Idx',8:'Thm+Idx+Mid',9:'Thm+Idx+Mid+Rng',10:'Fist'};
+
+function loadMap() {
+  fetch('/config/gesture_map').then(r=>r.json()).then(m => {
+    const overrides = {5:'STOP',10:'SCAN'};
+    const tbl = document.getElementById('gmapTable');
+    let html = '';
+    for (let i=1;i<=10;i++) {
+      const raw = m.gesture_to_preset ? m.gesture_to_preset[String(i)] : null;
+      let action = '—', cls = 'dim';
+      if (overrides[i]) { action=overrides[i]; cls=i===5?'stop':'scan'; }
+      else if (raw && !isNaN(raw)) {
+        const nm = m.presets && m.presets[String(raw)] ? m.presets[String(raw)] : 'P'+raw;
+        action=nm; cls='active';
+      }
+      html += `<tr><td class="gm-id">${i}</td><td class="gm-name">${GNAMES[i]||'?'}</td><td class="gm-action ${cls}">${action}</td></tr>`;
+    }
+    tbl.innerHTML = html;
+  });
+}
+
+// ── Keyboard ──────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); toggleTracking(); }
+  if (e.key === 's' || e.key === 'S') emergencyStop();
+});
+
+// ── Start ─────────────────────────────────────────
+setInterval(poll, 150);
+setInterval(pollCamera, 2500);
+loadMap();
 </script>
 </body>
 </html>"""
@@ -521,6 +970,17 @@ def api_stream():
                         scan_current_pos=scanner.current_pos,
                         countdown_state=_countdown_state,
                         dry_run=dry_run,
+                        safety_state={
+                            "unlocked":       _safety_unlocked,
+                            "hold_sec":       (time.time() - _safety_gate5_start) if _safety_gate5_start > 0 else 0.0,
+                            "hold_total":     SAFETY_HOLD_SEC,
+                            "timeout_left":   max(0.0, SAFETY_TIMEOUT - (time.time() - _safety_unlocked_at)) if _safety_unlocked else 0.0,
+                            "timeout_total":  SAFETY_TIMEOUT,
+                            "presets":        PRESETS,
+                            "gesture_map":    GESTURE_TO_PRESET,
+                            "debounce_ratio": _debounce_counter / DEBOUNCE_FRAMES if DEBOUNCE_FRAMES > 0 else 0.0,
+                            "debounce_gid":   _debounce_last_gesture,
+                        },
                     )
                     _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
