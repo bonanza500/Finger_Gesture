@@ -1,7 +1,9 @@
-flask
-flask-cors
-mediapipe
-opencv-python
-numpy
-joblib
-keyboard
+Flask==3.1.3
+flask_cors==6.0.2
+joblib==1.5.3
+keyboard==0.13.5
+mediapipe==0.10.33
+numpy==2.4.4
+opencv_contrib_python==4.13.0.92
+opencv_python==4.13.0.92
+pyrealsense2==2.57.7.10387
