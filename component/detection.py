@@ -12,9 +12,8 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# Model bundled from Finger_Gesture-ucup/model/
 MODEL_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "model", "hand_gesture_recognizer_v2"
+    os.path.dirname(os.path.abspath(__file__)), "..", "model", "hand_gesture_recognizer_v2"
 )
 
 # ── Landmark index constants ──────────────────────────────────────
@@ -239,6 +238,14 @@ class GestureDetector:
             self._rs_align = rs.align(rs.stream.color)
             time.sleep(1)
             print(f"  [CAM] RealSense opened: {self._frame_width}x{self._frame_height}")
+            
+        elif self._camera_source == "laptop":
+            self._camera = cv2.VideoCapture(0)
+            if not self._camera.isOpened():
+                self._camera.release()
+                self._camera = None
+                print("  [WARN] Cannot open camera index 0, trying other indices...")
+
         else:
             indices = [self._camera_index] + [i for i in range(4) if i != self._camera_index]
             for idx in indices:

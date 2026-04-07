@@ -1,0 +1,7 @@
+flask
+flask-cors
+mediapipe
+opencv-python
+numpy
+joblib
+keyboard

@@ -1,286 +1,1034 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Finger Gesture Control</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+    <title>Nova 5 — Gesture Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@700;800&display=swap"
+      rel="stylesheet"
+    />
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 900px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
-        h1 { color: #667eea; margin-bottom: 20px; font-size: 28px; text-align: center; }
-        .status { padding: 15px; background: #e6f7ff; border-left: 4px solid #1890ff; margin-bottom: 20px; border-radius: 4px; }
-        .status.error { background: #fff1f0; border-color: #ff4d4f; }
-        .status.success { background: #f6ffed; border-color: #52c41a; }
-        .video-container { width: 100%; margin-bottom: 20px; background: #000; border-radius: 8px; overflow: hidden; position: relative; }
-        .video-container img { width: 100%; display: block; }
-        .gesture-display { text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; margin-bottom: 20px; color: white; }
-        .gesture-number { font-size: 80px; font-weight: bold; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-        .gesture-name { font-size: 24px; margin-bottom: 5px; }
-        .gesture-fingers { font-size: 16px; opacity: 0.9; }
-        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
-        .info-card { padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0; }
-        .info-card h3 { font-size: 12px; color: #8c8c8c; margin-bottom: 8px; text-transform: uppercase; }
-        .info-card .value { font-size: 18px; font-weight: 600; color: #262626; }
-        .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
-        button { padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s; }
-        button:hover { background: #5568d3; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
-        button:active { transform: translateY(0); }
-        button.danger { background: #ff4d4f; }
-        button.danger:hover { background: #ff7875; }
-        .gesture-legend { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-        .gesture-legend h3 { font-size: 14px; margin-bottom: 10px; color: #667eea; }
-        .gesture-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; font-size: 12px; }
-        .gesture-item { padding: 8px; background: white; border-radius: 4px; border: 1px solid #e0e0e0; }
-        .gesture-item strong { color: #667eea; }
-        .log { margin-top: 20px; padding: 15px; background: #fafafa; border-radius: 8px; max-height: 150px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 11px; }
-        .log-entry { margin-bottom: 5px; color: #595959; }
+      :root {
+        --bg: #07090b;
+        --surface: #0e1215;
+        --border: #1a2028;
+        --border2: #253040;
+        --green: #00e676;
+        --green-dim: #00e67630;
+        --amber: #ffab00;
+        --red: #ff3d3d;
+        --blue: #40c4ff;
+        --muted: #4a5568;
+        --text: #d0dce8;
+        --mono: "JetBrains Mono", monospace;
+        --display: "Syne", sans-serif;
+      }
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 13px;
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      /* Subtle scanline texture */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 230, 118, 0.012) 2px,
+          rgba(0, 230, 118, 0.012) 4px
+        );
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      /* ── Header ─────────────────────────────────────── */
+      .hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 20px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(8px);
+      }
+      .hdr-left {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .hdr h1 {
+        font-family: var(--display);
+        font-size: clamp(15px, 2.5vw, 20px);
+        font-weight: 800;
+        color: #fff;
+        letter-spacing: -0.5px;
+        line-height: 1;
+      }
+      .hdr h1 em {
+        color: var(--green);
+        font-style: normal;
+      }
+      .hdr-sub {
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      .hdr-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .badge {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      .pulse {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 0 var(--green);
+        animation: pulse 2s infinite;
+      }
+      .pulse.off {
+        background: var(--red);
+        box-shadow: 0 0 0 0 var(--red);
+        animation: none;
+      }
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.6);
+        }
+        70% {
+          box-shadow: 0 0 0 7px rgba(0, 230, 118, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(0, 230, 118, 0);
+        }
+      }
+      #sysTime {
+        font-size: 12px;
+        color: var(--muted);
+        font-family: var(--mono);
+      }
+
+      /* ── Layout ─────────────────────────────────────── */
+      .layout {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        grid-template-rows: auto;
+        gap: 12px;
+        padding: 12px;
+        max-width: 1400px;
+        margin: 0 auto;
+        position: relative;
+        z-index: 1;
+      }
+
+      /* ── Video ──────────────────────────────────────── */
+      .video-wrap {
+        grid-column: 1;
+        grid-row: 1 / 3;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .video-box {
+        position: relative;
+        background: #000;
+        border: 1px solid var(--border2);
+        border-radius: 6px;
+        overflow: hidden;
+        aspect-ratio: 4/3;
+      }
+      .video-box img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .video-box .vid-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.7);
+        flex-direction: column;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+        transition: opacity 0.3s;
+      }
+      .video-box .vid-overlay.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .vid-corner {
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        border-color: var(--green);
+        border-style: solid;
+        opacity: 0.5;
+      }
+      .vid-corner.tl {
+        top: 8px;
+        left: 8px;
+        border-width: 2px 0 0 2px;
+      }
+      .vid-corner.tr {
+        top: 8px;
+        right: 8px;
+        border-width: 2px 2px 0 0;
+      }
+      .vid-corner.bl {
+        bottom: 8px;
+        left: 8px;
+        border-width: 0 0 2px 2px;
+      }
+      .vid-corner.br {
+        bottom: 8px;
+        right: 8px;
+        border-width: 0 2px 2px 0;
+      }
+      .vid-badge {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 230, 118, 0.12);
+        border: 1px solid var(--green);
+        color: var(--green);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        padding: 3px 10px;
+        border-radius: 2px;
+        text-transform: uppercase;
+      }
+
+      /* Gesture bar under video */
+      .gesture-bar {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .g-cell {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .g-cell .gc-label {
+        font-size: 9px;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .g-cell .gc-val {
+        font-size: 22px;
+        font-weight: 700;
+        font-family: var(--display);
+        color: #fff;
+        line-height: 1;
+      }
+      .g-cell .gc-sub {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      #gNum {
+        color: var(--green);
+      }
+      #gPreset {
+        color: var(--amber);
+      }
+
+      /* ── Side panels ────────────────────────────────── */
+      .side {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+      }
+      .card-title {
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card-title::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border);
+      }
+
+      /* Status rows */
+      .srow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 5px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .srow:last-child {
+        border-bottom: none;
+      }
+      .srow .slabel {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .srow .sval {
+        font-size: 12px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot.g {
+        background: var(--green);
+        box-shadow: 0 0 5px var(--green);
+      }
+      .dot.r {
+        background: var(--red);
+        box-shadow: 0 0 5px var(--red);
+      }
+      .dot.y {
+        background: var(--amber);
+        box-shadow: 0 0 5px var(--amber);
+      }
+
+      /* Buttons */
+      .btn {
+        width: 100%;
+        padding: 10px 14px;
+        border: none;
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      .btn:active {
+        transform: scale(0.97);
+      }
+      .btn-red {
+        background: #3d0a0a;
+        color: var(--red);
+        border: 1px solid var(--red);
+      }
+      .btn-red:hover {
+        background: var(--red);
+        color: #fff;
+      }
+      .btn-green {
+        background: #003d1a;
+        color: var(--green);
+        border: 1px solid var(--green);
+      }
+      .btn-green:hover {
+        background: var(--green);
+        color: #000;
+      }
+      .btn-blue {
+        background: #0a1e2e;
+        color: var(--blue);
+        border: 1px solid var(--blue);
+      }
+      .btn-blue:hover {
+        background: var(--blue);
+        color: #000;
+      }
+      .btn-amber {
+        background: #2e1a00;
+        color: var(--amber);
+        border: 1px solid var(--amber);
+      }
+      .btn-amber:hover {
+        background: var(--amber);
+        color: #000;
+      }
+      .btn-ghost {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border2);
+      }
+      .btn-ghost:hover {
+        border-color: var(--text);
+        color: var(--text);
+      }
+
+      .btn-row {
+        display: flex;
+        gap: 8px;
+      }
+      .btn-row .btn {
+        flex: 1;
+      }
+
+      /* Gesture map table */
+      .gmap {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .gmap tr {
+        border-bottom: 1px solid var(--border);
+      }
+      .gmap tr:last-child {
+        border-bottom: none;
+      }
+      .gmap td {
+        padding: 5px 4px;
+        font-size: 11px;
+      }
+      .gmap .gm-id {
+        color: var(--blue);
+        font-weight: 700;
+        width: 24px;
+      }
+      .gmap .gm-name {
+        color: var(--text);
+      }
+      .gmap .gm-action {
+        text-align: right;
+        font-weight: 600;
+      }
+      .gmap .gm-action.active {
+        color: var(--green);
+      }
+      .gmap .gm-action.scan {
+        color: var(--amber);
+      }
+      .gmap .gm-action.stop {
+        color: var(--red);
+      }
+      .gmap .gm-action.dim {
+        color: var(--muted);
+      }
+
+      /* Hotkeys */
+      .hkeys {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .hk {
+        background: #111820;
+        border: 1px solid var(--border2);
+        border-radius: 3px;
+        padding: 3px 8px;
+        font-size: 10px;
+        color: var(--text);
+        font-family: var(--mono);
+      }
+      .hk span {
+        color: var(--muted);
+        font-size: 9px;
+        margin-left: 4px;
+      }
+
+      /* Scan status bar */
+      .scan-bar {
+        display: none;
+        background: #1a1200;
+        border: 1px solid var(--amber);
+        border-radius: 4px;
+        padding: 8px 12px;
+        font-size: 11px;
+        color: var(--amber);
+        align-items: center;
+        gap: 8px;
+      }
+      .scan-bar.active {
+        display: flex;
+      }
+      .scan-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--amber);
+        animation: pulse-amber 1s infinite;
+      }
+      @keyframes pulse-amber {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+
+      /* ── Responsive ─────────────────────────────────── */
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+        .video-wrap {
+          grid-column: 1;
+          grid-row: 1;
+        }
+        .side {
+          grid-column: 1;
+        }
+        .gesture-bar {
+          grid-template-columns: 1fr 1fr 1fr;
+        }
+      }
+      @media (max-width: 480px) {
+        .hdr {
+          padding: 10px 14px;
+        }
+        .layout {
+          padding: 8px;
+          gap: 8px;
+        }
+        .gesture-bar {
+          grid-template-columns: 1fr 1fr;
+        }
+        .g-cell:last-child {
+          display: none;
+        }
+        .btn-row {
+          flex-direction: column;
+        }
+      }
     </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🖐️ Finger Gesture Control (1-10)</h1>
-        
-        <div id="status" class="status">
-            <strong>Status:</strong> <span id="statusText">Connecting...</span>
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="hdr">
+      <div class="hdr-left">
+        <h1>Nova 5 &mdash; <em>Gesture</em> Control</h1>
+        <div class="hdr-sub">MediaPipe · TCP/IP · digiCamControl</div>
+      </div>
+      <div class="hdr-right">
+        <span id="sysTime"></span>
+        <div class="badge" id="trackBadge">
+          <div class="pulse" id="pulseDot"></div>
+          <span id="trackLabel">LIVE</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <div class="layout">
+      <!-- Left: Video + gesture bar -->
+      <div class="video-wrap">
+        <div class="video-box">
+          <img
+            id="streamImg"
+            src="/stream"
+            alt="feed"
+            onload="streamOk()"
+            onerror="streamErr()"
+          />
+          <div class="vid-corner tl"></div>
+          <div class="vid-corner tr"></div>
+          <div class="vid-corner bl"></div>
+          <div class="vid-corner br"></div>
+          <div class="vid-badge" id="streamStatus">LIVE</div>
+          <div class="vid-overlay hidden" id="vidOverlay">
+            <svg
+              width="32"
+              height="32"
+              fill="none"
+              stroke="#4a5568"
+              stroke-width="1.5"
+              viewBox="0 0 24 24"
+            >
+              <rect x="2" y="7" width="20" height="15" rx="2" />
+              <path d="M16 3l-4 4-4-4" />
+            </svg>
+            <span>Reconnecting feed…</span>
+          </div>
         </div>
 
-        <div class="gesture-display">
-            <div class="gesture-number" id="gestureNumber">-</div>
-            <div class="gesture-name" id="gestureName">No hand detected</div>
-            <div class="gesture-fingers" id="gestureFingers">Show your hand to camera</div>
+        <div class="scan-bar" id="scanBar">
+          <div class="scan-dot"></div>
+          SCANNING — <span id="scanPos">Position 1</span>
         </div>
 
-        <div class="video-container">
-            <img id="videoFeed" src="" alt="Camera feed will appear here" style="display:none;">
+        <div class="gesture-bar">
+          <div class="g-cell">
+            <div class="gc-label">Gesture ID</div>
+            <div class="gc-val" id="gNum">—</div>
+            <div class="gc-sub" id="gName">No hand</div>
+          </div>
+          <div class="g-cell">
+            <div class="gc-label">Confidence</div>
+            <div class="gc-val" id="gConf" style="color: var(--blue)">—</div>
+            <div class="gc-sub" id="gMethod">—</div>
+          </div>
+          <div class="g-cell">
+            <div class="gc-label">Robot Action</div>
+            <div class="gc-val" id="gPreset">—</div>
+            <div class="gc-sub" id="gPresetName">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Control panels -->
+      <div class="side">
+        <!-- Tracking control -->
+        <div class="card">
+          <div class="card-title">Tracking Control</div>
+          <div class="btn-row" style="margin-bottom: 8px">
+            <button
+              class="btn btn-red"
+              id="btnTrack"
+              onclick="toggleTracking()"
+            >
+              ■ Stop
+            </button>
+            <button class="btn btn-ghost" onclick="emergencyStop()">
+              ⚡ E-Stop
+            </button>
+          </div>
+          <div class="hkeys">
+            <div class="hk">SPACE<span>toggle</span></div>
+            <div class="hk">S<span>e-stop</span></div>
+            <div class="hk">ESC<span>exit</span></div>
+          </div>
         </div>
 
-        <div class="info-grid">
-            <div class="info-card">
-                <h3>Hand Detected</h3>
-                <div class="value" id="handDetected">No</div>
-            </div>
-            <div class="info-card">
-                <h3>Confidence</h3>
-                <div class="value" id="confidence">-</div>
-            </div>
-            <div class="info-card">
-                <h3>Method</h3>
-                <div class="value" id="method">-</div>
-            </div>
+        <!-- Robot status -->
+        <div class="card">
+          <div class="card-title">Robot Status</div>
+          <div class="srow">
+            <span class="slabel">Connection</span
+            ><span class="sval" id="rConn"><span class="dot r"></span>—</span>
+          </div>
+          <div class="srow">
+            <span class="slabel">Enabled</span
+            ><span class="sval" id="rEnabled">—</span>
+          </div>
+          <div class="srow">
+            <span class="slabel">Current Preset</span
+            ><span class="sval" id="rPreset" style="color: var(--green)"
+              >—</span
+            >
+          </div>
+          <div class="srow">
+            <span class="slabel">Robot IP</span
+            ><span class="sval" id="rIp" style="color: var(--muted)">—</span>
+          </div>
+          <div class="btn-row" style="margin-top: 10px">
+            <button
+              class="btn btn-green"
+              onclick="enableRobot()"
+              style="font-size: 10px"
+            >
+              Enable
+            </button>
+            <button
+              class="btn btn-red"
+              onclick="disableRobot()"
+              style="font-size: 10px"
+            >
+              Disable
+            </button>
+          </div>
         </div>
 
-        <div class="gesture-legend">
-            <h3>📋 Gesture Reference</h3>
-            <div class="gesture-list">
-                <div class="gesture-item"><strong>1</strong> = Index</div>
-                <div class="gesture-item"><strong>2</strong> = Index + Middle</div>
-                <div class="gesture-item"><strong>3</strong> = Index + Middle + Ring</div>
-                <div class="gesture-item"><strong>4</strong> = Index + Middle + Ring + Pinky</div>
-                <div class="gesture-item"><strong>5</strong> = All Fingers</div>
-                <div class="gesture-item"><strong>6</strong> = Thumb</div>
-                <div class="gesture-item"><strong>7</strong> = Thumb + Index</div>
-                <div class="gesture-item"><strong>8</strong> = Thumb + Index + Middle</div>
-                <div class="gesture-item"><strong>9</strong> = Thumb + Index + Middle + Ring</div>
-                <div class="gesture-item"><strong>10</strong> = Fist</div>
-            </div>
+        <!-- Canon camera -->
+        <div class="card">
+          <div class="card-title">Canon EOS 6D</div>
+          <div class="srow">
+            <span class="slabel">Connection</span
+            ><span class="sval" id="cConn"
+              ><span class="dot r"></span>Offline</span
+            >
+          </div>
+          <div class="srow">
+            <span class="slabel">Method</span
+            ><span class="sval" id="cMethod" style="color: var(--muted)"
+              >—</span
+            >
+          </div>
+          <div class="srow">
+            <span class="slabel">Photos Taken</span
+            ><span class="sval" id="cCount" style="color: var(--green)">0</span>
+          </div>
+          <div class="srow" id="cErrRow" style="display: none">
+            <span class="slabel" style="color: var(--red)">Error</span
+            ><span
+              class="sval"
+              id="cErr"
+              style="
+                color: var(--red);
+                font-size: 10px;
+                max-width: 160px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                display: block;
+              "
+              >—</span
+            >
+          </div>
+          <div class="btn-row" style="margin-top: 10px">
+            <button
+              class="btn btn-amber"
+              onclick="manualCapture()"
+              style="font-size: 10px"
+            >
+              📷 Capture
+            </button>
+            <button
+              class="btn btn-blue"
+              id="btnReconn"
+              onclick="reconnectCamera()"
+              style="font-size: 10px"
+            >
+              ↺ Reconnect
+            </button>
+          </div>
         </div>
 
-        <div class="controls">
-            <button onclick="startTracking()">▶ Start Tracking</button>
-            <button onclick="stopTracking()">⏸ Stop Tracking</button>
-            <button onclick="testConnection()">🔄 Test Connection</button>
-            <button class="danger" onclick="clearLog()">🗑 Clear Log</button>
+        <!-- Gesture map -->
+        <div class="card">
+          <div class="card-title">Gesture Map</div>
+          <table class="gmap" id="gmapTable"></table>
         </div>
-
-        <div class="log" id="log"></div>
+      </div>
+      <!-- /side -->
     </div>
+    <!-- /layout -->
 
     <script>
-        const SERVER_URL = 'http://localhost:5001';
-        let trackingInterval = null;
-        let streamUpdateInterval = null;
+      // ── State ────────────────────────────────────────
+      let isTracking = true;
+      let streamRetries = 0;
+      let streamTimer = null;
 
-        function log(message) {
-            const logDiv = document.getElementById('log');
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-            logDiv.insertBefore(entry, logDiv.firstChild);
-            console.log(message);
+      // ── Clock ────────────────────────────────────────
+      function tick() {
+        const n = new Date();
+        document.getElementById("sysTime").textContent = n
+          .toTimeString()
+          .slice(0, 8);
+      }
+      tick();
+      setInterval(tick, 1000);
+
+      // ── Stream watchdog ───────────────────────────────
+      function streamOk() {
+        streamRetries = 0;
+        document.getElementById("vidOverlay").classList.add("hidden");
+        document.getElementById("streamStatus").textContent = "LIVE";
+        document.getElementById("streamStatus").style.color = "var(--green)";
+        document.getElementById("streamStatus").style.borderColor =
+          "var(--green)";
+        if (streamTimer) {
+          clearTimeout(streamTimer);
+          streamTimer = null;
         }
+      }
+      function streamErr() {
+        document.getElementById("vidOverlay").classList.remove("hidden");
+        document.getElementById("streamStatus").textContent = "NO FEED";
+        document.getElementById("streamStatus").style.color = "var(--red)";
+        document.getElementById("streamStatus").style.borderColor =
+          "var(--red)";
+        // Retry with cache-bust
+        streamRetries++;
+        const delay = Math.min(1000 * streamRetries, 5000);
+        streamTimer = setTimeout(() => {
+          const img = document.getElementById("streamImg");
+          img.src = "/stream?" + Date.now();
+        }, delay);
+      }
 
-        function updateStatus(text, type = 'info') {
-            const statusDiv = document.getElementById('status');
-            const statusText = document.getElementById('statusText');
-            statusText.textContent = text;
-            statusDiv.className = 'status ' + type;
+      // ── Tracking ──────────────────────────────────────
+      function toggleTracking() {
+        const url = isTracking ? "/tracking/stop" : "/tracking/start";
+        fetch(url, { method: "POST" })
+          .then((r) => r.json())
+          .then(() => setTracking(!isTracking));
+      }
+      function setTracking(on) {
+        isTracking = on;
+        const btn = document.getElementById("btnTrack");
+        const dot = document.getElementById("pulseDot");
+        const lbl = document.getElementById("trackLabel");
+        if (on) {
+          btn.className = "btn btn-red";
+          btn.textContent = "■ Stop";
+          dot.className = "pulse";
+          lbl.textContent = "LIVE";
+        } else {
+          btn.className = "btn btn-green";
+          btn.textContent = "► Start";
+          dot.className = "pulse off";
+          lbl.textContent = "PAUSED";
         }
+      }
+      function emergencyStop() {
+        fetch("/robot/stop", { method: "POST" });
+        fetch("/tracking/stop", { method: "POST" }).then(() =>
+          setTracking(false),
+        );
+      }
+      function enableRobot() {
+        fetch("/robot/enable", { method: "POST" });
+      }
+      function disableRobot() {
+        fetch("/robot/disable", { method: "POST" });
+      }
 
-        async function testConnection() {
-            log('Testing connection to finger gesture server...');
-            log('Attempting to connect to: ' + SERVER_URL);
-            
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 5000);
-                
-                const response = await fetch(`${SERVER_URL}/status`, {
-                    method: 'GET',
-                    mode: 'cors',
-                    cache: 'no-cache',
-                    signal: controller.signal
-                });
-                
-                clearTimeout(timeoutId);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
-                log(`✓ Connected! Camera: ${data.width}x${data.height}, Model: ${data.model_loaded}`);
-                log(`✓ Gestures available: ${Object.keys(data.gestures).length}`);
-                updateStatus('Connected to finger gesture server', 'success');
-                return true;
-            } catch (error) {
-                if (error.name === 'AbortError') {
-                    log(`✗ Connection timeout - is finger_server.py running?`);
-                } else {
-                    log(`✗ Connection failed: ${error.message}`);
-                }
-                log('Make sure finger_server.py is running on localhost:5001');
-                log('Test in browser: http://localhost:5001/status');
-                updateStatus('Cannot connect - Start finger_server.py first', 'error');
-                return false;
+      // ── Camera ────────────────────────────────────────
+      function manualCapture() {
+        fetch("/camera/capture", { method: "POST" })
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.status === "captured") {
+              document.getElementById("cCount").textContent = d.count;
+              flashElement("cCount");
             }
-        }
+          })
+          .catch(() => {});
+      }
+      function reconnectCamera() {
+        const btn = document.getElementById("btnReconn");
+        btn.textContent = "… Trying";
+        btn.disabled = true;
+        fetch("/camera/reconnect", { method: "POST" })
+          .then((r) => r.json())
+          .then((d) => {
+            btn.disabled = false;
+            btn.textContent = d.connected ? "✓ Connected" : "↺ Reconnect";
+            setTimeout(() => {
+              btn.textContent = "↺ Reconnect";
+            }, 3000);
+          })
+          .catch(() => {
+            btn.disabled = false;
+            btn.textContent = "↺ Reconnect";
+          });
+      }
+      function flashElement(id) {
+        const el = document.getElementById(id);
+        el.style.transition = "color 0.1s";
+        el.style.color = "#fff";
+        setTimeout(() => {
+          el.style.color = "";
+        }, 400);
+      }
 
-        async function updateDetection() {
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 2000);
-                
-                const response = await fetch(`${SERVER_URL}/detection`, {
-                    signal: controller.signal,
-                    mode: 'cors'
-                });
-                
-                clearTimeout(timeoutId);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                
-                const data = await response.json();
+      // ── Poll detection ────────────────────────────────
+      function poll() {
+        fetch("/detection")
+          .then((r) => r.json())
+          .then((d) => {
+            const hand = d.hand_detected;
 
-                if (data.hand_detected) {
-                    document.getElementById('gestureNumber').textContent = data.gesture_id || '-';
-                    document.getElementById('gestureName').textContent = data.gesture_name || 'Unknown';
-                    
-                    const fingersText = data.raised_fingers.length > 0 
-                        ? `Raised: ${data.raised_fingers.join(', ')}`
-                        : 'No fingers raised (Fist)';
-                    document.getElementById('gestureFingers').textContent = fingersText;
-                    
-                    document.getElementById('handDetected').textContent = 'Yes';
-                    document.getElementById('confidence').textContent = `${(data.confidence * 100).toFixed(0)}%`;
-                    document.getElementById('method').textContent = data.method || 'MediaPipe';
-                } else {
-                    document.getElementById('gestureNumber').textContent = '-';
-                    document.getElementById('gestureName').textContent = 'No hand detected';
-                    document.getElementById('gestureFingers').textContent = 'Show your hand to camera';
-                    document.getElementById('handDetected').textContent = 'No';
-                    document.getElementById('confidence').textContent = '-';
-                    document.getElementById('method').textContent = '-';
-                }
-            } catch (error) {
-                if (error.name !== 'AbortError') {
-                    console.error('Detection update error:', error);
-                    if (trackingInterval) {
-                        stopTracking();
-                        log('Tracking stopped due to connection error');
-                        updateStatus('Connection lost - click Test Connection to retry', 'error');
-                    }
-                }
+            // Gesture panel
+            document.getElementById("gNum").textContent = hand
+              ? d.gesture_id
+              : "—";
+            document.getElementById("gNum").style.color = hand
+              ? "var(--green)"
+              : "var(--muted)";
+            document.getElementById("gName").textContent = hand
+              ? d.gesture_name
+              : "No hand detected";
+            document.getElementById("gConf").textContent = hand
+              ? Math.round((d.confidence || 0) * 100) + "%"
+              : "—";
+            document.getElementById("gMethod").textContent = d.method || "—";
+
+            // Preset / action
+            const preset = d.robot_preset;
+            let pLabel = "—",
+              pSub = "—",
+              pColor = "var(--muted)";
+            if (preset === "scan") {
+              pLabel = "SCAN";
+              pSub = "Oscillating";
+              pColor = "var(--amber)";
+            } else if (preset === "camera") {
+              pLabel = "📷";
+              pSub = "Capturing";
+              pColor = "var(--blue)";
+            } else if (preset) {
+              pLabel = "P" + preset;
+              pSub = "Moving";
+              pColor = "var(--green)";
             }
-        }
+            document.getElementById("gPreset").textContent = pLabel;
+            document.getElementById("gPreset").style.color = pColor;
+            document.getElementById("gPresetName").textContent = pSub;
 
-        async function updateStream() {
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 3000);
-                
-                const response = await fetch(`${SERVER_URL}/frame/annotated`, {
-                    signal: controller.signal,
-                    mode: 'cors'
-                });
-                
-                clearTimeout(timeoutId);
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                
-                const data = await response.json();
-                if (data.frame) {
-                    const img = document.getElementById('videoFeed');
-                    img.src = 'data:image/jpeg;base64,' + data.frame;
-                    img.style.display = 'block';
-                }
-            } catch (error) {
-                if (error.name !== 'AbortError') {
-                    console.error('Stream update error:', error);
-                }
-            }
-        }
-
-        function startTracking() {
-            if (trackingInterval) {
-                log('Tracking already running');
-                return;
-            }
-            log('Starting tracking...');
-            updateStatus('Tracking active', 'success');
-            trackingInterval = setInterval(updateDetection, 100);  // 10 Hz
-            streamUpdateInterval = setInterval(updateStream, 200);  // 5 Hz
-        }
-
-        function stopTracking() {
-            if (trackingInterval) {
-                clearInterval(trackingInterval);
-                trackingInterval = null;
-            }
-            if (streamUpdateInterval) {
-                clearInterval(streamUpdateInterval);
-                streamUpdateInterval = null;
-            }
-            log('Tracking stopped');
-            updateStatus('Tracking stopped', 'info');
-        }
-
-        function clearLog() {
-            document.getElementById('log').innerHTML = '';
-        }
-
-        // Auto-connect on load
-        window.addEventListener('load', async () => {
-            log('Finger Gesture plugin loaded');
-            log('Checking server connection...');
-            const connected = await testConnection();
-            if (connected) {
-                log('Auto-starting tracking...');
-                startTracking();
+            // Scan bar
+            const scanBar = document.getElementById("scanBar");
+            if (d.scan_active) {
+              scanBar.classList.add("active");
+              document.getElementById("scanPos").textContent =
+                d.scan_position === "pos2" ? "Position 2" : "Position 1";
             } else {
-                log('Server not available. Start finger_server.py and click "Test Connection"');
-                updateStatus('Server not running - Start finger_server.py first', 'error');
+              scanBar.classList.remove("active");
             }
-        });
 
-        // Cleanup on unload
-        window.addEventListener('beforeunload', () => {
-            stopTracking();
-        });
+            // Tracking state sync
+            if (d.method === "paused" && isTracking) setTracking(false);
+            if (d.method !== "paused" && !isTracking) setTracking(true);
+
+            // Robot status
+            if (d.robot) {
+              const r = d.robot;
+              document.getElementById("rConn").innerHTML = r.connected
+                ? '<span class="dot g"></span>Connected'
+                : '<span class="dot r"></span>Disconnected';
+              document.getElementById("rEnabled").innerHTML = r.enabled
+                ? '<span class="dot g"></span>Enabled'
+                : '<span class="dot y"></span>Disabled';
+              const pn = r.current_preset;
+              document.getElementById("rPreset").textContent =
+                pn === "scan" ? "SCANNING" : pn ? "→ P" + pn : "Idle";
+              document.getElementById("rIp").textContent = r.ip || "—";
+            }
+          })
+          .catch(() => {});
+      }
+
+      // ── Poll camera ───────────────────────────────────
+      function pollCamera() {
+        fetch("/camera/status")
+          .then((r) => r.json())
+          .then((d) => {
+            document.getElementById("cConn").innerHTML = d.connected
+              ? '<span class="dot g"></span>Connected'
+              : '<span class="dot r"></span>Offline';
+            document.getElementById("cMethod").textContent =
+              d.capture_method || "—";
+            document.getElementById("cCount").textContent =
+              d.capture_count || 0;
+            const errRow = document.getElementById("cErrRow");
+            if (d.last_error) {
+              document.getElementById("cErr").textContent = d.last_error;
+              errRow.style.display = "flex";
+            } else {
+              errRow.style.display = "none";
+            }
+          })
+          .catch(() => {});
+      }
+
+      // ── Gesture map ───────────────────────────────────
+      const GNAMES = {
+        1: "Index",
+        2: "Index+Mid",
+        3: "Idx+Mid+Ring",
+        4: "Idx+Mid+Rng+Pnk",
+        5: "All Fingers",
+        6: "Thumb",
+        7: "Thumb+Idx",
+        8: "Thm+Idx+Mid",
+        9: "Thm+Idx+Mid+Rng",
+        10: "Fist",
+      };
+
+      function loadMap() {
+        fetch("/config/gesture_map")
+          .then((r) => r.json())
+          .then((m) => {
+            const overrides = { 5: "STOP", 10: "SCAN" };
+            const tbl = document.getElementById("gmapTable");
+            let html = "";
+            for (let i = 1; i <= 10; i++) {
+              const raw = m.gesture_to_preset
+                ? m.gesture_to_preset[String(i)]
+                : null;
+              let action = "—",
+                cls = "dim";
+              if (overrides[i]) {
+                action = overrides[i];
+                cls = i === 5 ? "stop" : "scan";
+              } else if (raw && !isNaN(raw)) {
+                const nm =
+                  m.presets && m.presets[String(raw)]
+                    ? m.presets[String(raw)]
+                    : "P" + raw;
+                action = nm;
+                cls = "active";
+              }
+              html += `<tr><td class="gm-id">${i}</td><td class="gm-name">${GNAMES[i] || "?"}</td><td class="gm-action ${cls}">${action}</td></tr>`;
+            }
+            tbl.innerHTML = html;
+          });
+      }
+
+      // ── Keyboard ──────────────────────────────────────
+      document.addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+          e.preventDefault();
+          toggleTracking();
+        }
+        if (e.key === "s" || e.key === "S") emergencyStop();
+      });
+
+      // ── Start ─────────────────────────────────────────
+      setInterval(poll, 150);
+      setInterval(pollCamera, 2500);
+      loadMap();
     </script>
-</body>
+  </body>
 </html>
