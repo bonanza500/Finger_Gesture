@@ -11,7 +11,7 @@ import threading
 # ── DobotStudio Pro presets.json path ───────────────────────────
 # The file is written by DobotStudio Pro at this location.
 # Change the path here if your installation is elsewhere.
-DOBOTSTUDIO_PRESETS_JSON = r"C:\Program Files (x86)\DobotStudio Pro\presets.json"
+DOBOTSTUDIO_PRESETS_JSON = r"E:\Magang\Jonas\ArmRobot\Dobot\v2\preset\presets.json"
 
 # Fallback hardcoded values (used only when the JSON file cannot be read)
 _FALLBACK_INITIAL_POSE = {

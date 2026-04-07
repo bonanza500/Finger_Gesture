@@ -48,13 +48,13 @@ import argparse
 from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 
-from detection import GestureDetector, GESTURE_ID_TO_NAME
-from dobot_controller import (
+from component.detection import GestureDetector, GESTURE_ID_TO_NAME
+from component.dobot_controller import (
     DobotController, ScanController,
     load_presets_from_json, build_gesture_map,
     DOBOTSTUDIO_PRESETS_JSON, _FALLBACK_INITIAL_POSE, _FALLBACK_PRESETS,
 )
-from camera_connection import (
+from component.camera_connection import (
     CanonCamera, countdown_and_capture, abort_countdown,
     COUNTDOWN_COOLDOWN_FRAMES, DIGICAM_URL, DIGICAM_AUTOLAUNCH,
 )
