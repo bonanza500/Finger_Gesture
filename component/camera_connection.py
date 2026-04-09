@@ -45,6 +45,13 @@ COUNTDOWN_NUMBER_DELAY     = 0.8
 TTS_SPEECH_RATE            = 130
 COUNTDOWN_COOLDOWN_FRAMES  = int((ROBOT_SETTLE_DELAY + len(COUNTDOWN_NUMBERS) * COUNTDOWN_NUMBER_DELAY + 3) * 30)
 
+# ── Session timeout configuration ─────────────────────────────────
+
+SESSION_TIMEOUT_ENABLED    = True
+SESSION_TIMEOUT_SECONDS    = 60  # 5 minutes = 300 seconds
+_session_start_time        = None  # Track when session started
+_session_timeout_callback  = None  # Callback function when timeout occurs
+
 
 def _speak(text, block=True):
     """
@@ -78,6 +85,64 @@ def _beep(frequency=880, duration_ms=250):
             winsound.Beep(int(frequency), int(duration_ms))
         except Exception:
             pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SESSION TIMEOUT MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════
+
+def start_session_timer():
+    """Start tracking session time. Call this when system starts."""
+    global _session_start_time
+    _session_start_time = time.time()
+    print(f"  [SESSION] ⏱️  Session timer started (timeout in {SESSION_TIMEOUT_SECONDS}s)")
+
+
+def get_session_elapsed_time():
+    """Get elapsed time in seconds since session started."""
+    if _session_start_time is None:
+        return 0.0
+    return time.time() - _session_start_time
+
+
+def get_session_remaining_time():
+    """Get remaining time before timeout in seconds."""
+    if not SESSION_TIMEOUT_ENABLED or _session_start_time is None:
+        return SESSION_TIMEOUT_SECONDS
+    elapsed = get_session_elapsed_time()
+    remaining = SESSION_TIMEOUT_SECONDS - elapsed
+    return max(0.0, remaining)
+
+
+def is_session_timeout():
+    """Check if 5-minute session timeout has been reached."""
+    if not SESSION_TIMEOUT_ENABLED or _session_start_time is None:
+        return False
+    elapsed = get_session_elapsed_time()
+    return elapsed >= SESSION_TIMEOUT_SECONDS
+
+
+def set_session_timeout_callback(callback):
+    """Register a callback function to be called when session times out."""
+    global _session_timeout_callback
+    _session_timeout_callback = callback
+
+
+def check_session_timeout():
+    """
+    Check if timeout reached. If so, invoke callback and print warning.
+    Call this periodically from main loop.
+    Returns True if timeout reached.
+    """
+    if is_session_timeout():
+        remaining = get_session_remaining_time()
+        if remaining <= 0:
+            print("  [SESSION] ⏱️  5-MINUTE SESSION TIMEOUT REACHED!")
+            print("  [SESSION] Shutting down system...")
+            if _session_timeout_callback:
+                _session_timeout_callback()
+            return True
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════

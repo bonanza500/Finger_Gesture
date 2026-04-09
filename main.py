@@ -56,6 +56,8 @@ from component.dobot_controller import (
 from component.camera_connection import (
     CanonCamera, countdown_and_capture, abort_countdown,
     COUNTDOWN_COOLDOWN_FRAMES, DIGICAM_URL, DIGICAM_AUTOLAUNCH,
+    start_session_timer, check_session_timeout, set_session_timeout_callback,
+    get_session_elapsed_time, get_session_remaining_time,
 )
 
 try:
@@ -78,7 +80,7 @@ JPEG_QUALITY     = 75
 CAMERA_SOURCE    = "laptop"   # "laptop" or "realsense"
 DETECTION_METHOD = "auto"
 
-MODEL_PATH         = r"C:\My Websites\hand_tracking\runs\train\finger_gestures\weights\best.pt"
+MODEL_PATH         = None  # Will use MediaPipe model from component/model folder
 SKLEARN_MODEL_PATH = None
 
 MP_MAX_HANDS      = 1
@@ -385,6 +387,7 @@ def api_tracking_status():
 
 @flask_app.route("/status", methods=["GET"])
 def api_status():
+    from component.camera_connection import get_session_elapsed_time, get_session_remaining_time
     return jsonify({
         "running": is_running,
         "tracking": tracking_active,
@@ -394,6 +397,11 @@ def api_status():
         "gestures": GESTURE_ID_TO_NAME,
         "gesture_to_preset": {str(k): v for k, v in GESTURE_TO_PRESET.items()},
         "presets": {str(k): v["name"] for k, v in PRESETS.items()},
+        "session": {
+            "elapsed_seconds": get_session_elapsed_time(),
+            "remaining_seconds": get_session_remaining_time(),
+            "timeout_total": 300,
+        },
     })
 
 @flask_app.route("/detection", methods=["GET"])
@@ -408,6 +416,7 @@ def api_detection():
 
 @flask_app.route("/stream", methods=["GET"])
 def api_stream():
+    from component.camera_connection import get_session_remaining_time
     def gen():
         while is_running:
             if detector:
@@ -423,6 +432,7 @@ def api_stream():
                         countdown_state=_countdown_state,
                         dry_run=dry_run,
                         safety_state=_build_safety_overlay_state(),
+                        session_remaining=get_session_remaining_time(),
                     )
                     _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
@@ -710,6 +720,16 @@ def _shutdown_runtime():
     print("  ✓ Shutdown complete.")
 
 
+def _on_session_timeout():
+    """Callback when 5-minute session timeout is reached."""
+    global is_running
+    print("\n  ╔════════════════════════════════════╗")
+    print("  ║  📊 SESSION TIMEOUT               ║")
+    print("  ║  (5-minute limit reached)         ║")
+    print("  ╚════════════════════════════════════╝\n")
+    is_running = False
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════
@@ -729,6 +749,11 @@ def main():
     _setup_canon_camera(photo_dir=args.photo_dir, camera_disabled=(not CANON_ENABLED or args.no_camera))
 
     is_running = True
+
+    # Setup session timeout
+    set_session_timeout_callback(_on_session_timeout)
+    start_session_timer()
+
     _patch_and_start_detector()
     key_thread = _start_background_threads(args.port)
     _print_runtime_summary(args.port)
@@ -737,6 +762,10 @@ def main():
         while is_running:
             if key_thread and not key_thread.is_alive():
                 break
+
+            # Check if session timeout reached
+            check_session_timeout()
+
             time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n  [!] Ctrl+C detected")

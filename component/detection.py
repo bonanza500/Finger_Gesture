@@ -331,7 +331,7 @@ class GestureDetector:
 
     def draw_overlay(self, frame, tracking_active=True, robot=None, canon=None,
                      scan_active=False, scan_current_pos=None, countdown_state=None,
-                     dry_run=False, safety_state=None):
+                     dry_run=False, safety_state=None, session_remaining=None):
         out = frame.copy()
         with self._lock:
             det  = self._latest_detection.copy()
@@ -348,7 +348,23 @@ class GestureDetector:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
             return out
 
-        # ── Safety gate counter (top-right corner) ────────────────────
+        # ── Session timer (top-left corner) ──────────────────────────
+        if session_remaining is not None:
+            mins = int(session_remaining // 60)
+            secs = int(session_remaining % 60)
+            if session_remaining > 60:
+                timer_txt = f"SESSION: {mins}:{secs:02d}"
+                timer_col = (0, 255, 0)  # Green if > 1 min
+            elif session_remaining > 30:
+                timer_txt = f"SESSION: {mins}:{secs:02d}"
+                timer_col = (0, 165, 255)  # Amber if 30-60 sec
+            else:
+                timer_txt = f"SESSION: {mins}:{secs:02d}"
+                timer_col = (0, 0, 255)  # Red if < 30 sec
+            cv2.rectangle(out, (10, 10), (200, 40), (20, 20, 20), -1)
+            cv2.rectangle(out, (10, 10), (200, 40), timer_col, 2)
+            cv2.putText(out, timer_txt, (15, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.5, timer_col, 1)
+        # ── End session timer ────────────────────────────────────────
         if safety_state is not None:
             unlocked   = safety_state.get("unlocked", False)
             hold_sec   = safety_state.get("hold_sec", 0.0)
